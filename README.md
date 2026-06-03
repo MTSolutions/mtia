@@ -234,11 +234,16 @@ frontend ──JWT── mtia (FastAPI) ──┬── LLM (Ollama/vLLM, in-env
 ```
 
 - **Tool-calling**, no text-to-SQL: cada herramienta envuelve una función de
-  mtapi2, valida los argumentos contra el alcance del request (el equipo debe
-  pertenecer a la planta) y ejecuta. Las comparaciones ("¿qué equipo afecta más
-  el OEE?") se calculan en código a partir de cifras oficiales, no por el modelo.
-- **Aislamiento**: el claim `client` del JWT se exige (igual que en `rag`) y el
-  `plant_id` se valida contra `getplants` del cliente.
+  mtapi2, valida los argumentos contra el alcance del request y ejecuta. Las
+  comparaciones ("¿qué equipo afecta más el OEE?") se calculan en código a
+  partir de cifras oficiales, no por el modelo.
+- **Por nombre y por nodo**: el agente trabaja con **nombres** (no ids) y acepta
+  un `node` que puede ser **equipo, línea, sección o planta**. Resuelve el árbol
+  con nombres vía `mtapi2.devtree_named`; para un nodo agregado pasa la **lista
+  de dev_ids** a la función de indicador (que ya agrega listas internamente).
+- **Aislamiento**: el claim `client` del JWT se exige (igual que en `rag`), el
+  `plant_id` se valida contra `getplants`, y `device_meta`/`device_names`
+  filtran por cliente (ids ajenos se descartan).
 - **mtia no necesita GPU**: solo orquesta. El motor de inferencia (Ollama/vLLM)
   es lo único que usa GPU; mtia lo alcanza por `OLLAMA_URL`/`LLM_URL`.
 
@@ -256,19 +261,31 @@ traza de auditoría de cada cifra), `token` (`{text}`), `done` (`{}`), `error`
 (`{message}`). Códigos: `401` sin/JWT inválido, `403` `client` no coincide,
 `404` `plant_id` ajeno al cliente, `503` mtapi2 no disponible.
 
-### Catálogo de herramientas (MVP)
+### Catálogo de herramientas
+
+Todas aceptan un **`node`** (nombre de equipo/línea/sección/planta) y un
+**`period`** relativo. Para nodos agregados, la familia OEE pasa la lista de
+dev_ids al indicador (que agrega); `production` suma; `top_stops`/`rank_downtime`
+usan el conjunto de equipos del nodo.
 
 | Herramienta | mtapi2 | Para |
 |---|---|---|
-| `oee`, `disponibilidad`, `rendimiento`, `calidad`, `cumplimiento` | idem (por equipo) | indicador de un equipo en un período |
-| `rank_oee` | `oee` por equipo | "¿qué equipo afecta más el OEE?" (ranking en código, peor primero) |
-| `top_stops` | `pareto` | "¿detención más repetida/larga?" (por `count` o `time`, opcional por línea) |
-| `production` | `prod_dev_kp`/`prod_dev_t`/`total_tons` | producción (`measure`: `standard`=kp, `counter`, `tons`) |
+| `oee`, `disponibilidad`, `rendimiento`, `calidad`, `cumplimiento` | idem (escalar o lista de dev_ids) | indicador de un nodo en un período |
+| `rank_oee` | `oee` por equipo | "¿qué equipo afecta más el OEE?" (peor primero) |
+| `rank_downtime` | `pareto` por equipo | "¿qué máquina estuvo más tiempo detenida?" (equipos por tiempo detenido) |
+| `top_stops` | `pareto` | "¿detención más repetida/larga?" (motivos; `by`=`count`/`time`, opcional por `node`) |
+| `production` | `prod_dev_kp`/`prod_dev_t`/`total_tons` | producción (`measure`: `standard`=kp, `counter`, `tons`; suma por nodo) |
+| `daily_oee` | `oee` por día | "¿cuál fue el mejor/peor día?" (serie diaria + mejor/peor) |
 
-> `cumplimiento` es específico por cliente; si un cliente no lo implementa, la
-> herramienta responde "no disponible" en vez de fallar.
+**`period`** acepta: `hoy`, `ayer`, `anteayer`, `esta semana`, `semana pasada`,
+`este mes`, `mes pasado`, `últimos N días`.
+
+> `rank_downtime` (equipos por tiempo detenido) ≠ `top_stops` (motivos de
+> detención por tiempo/conteo).
+> `cumplimiento` es específico por cliente; si no está, la herramienta responde
+> "no disponible" en vez de fallar.
 > `kp` es un **multiplicador de la especificación del producto**, no una unidad;
-> la unidad de medida vive en `Device.unit`.
+> la unidad de medida vive en `Device.unit` (la expone `mtapi2.device_meta`).
 
 ### Variables de entorno
 
@@ -281,29 +298,40 @@ traza de auditoría de cada cifra), `token` (`{text}`), `done` (`{}`), `error`
 
 ### Modelo: dev vs producción
 
-- **Dev (local)**: Ollama en el host. Para *plumbing* funciona con `gemma4:e4b`,
-  pero su tool-calling es débil. El modelo objetivo, **`gemma4:12b`**, aún no
-  está soportado por las versiones liberadas de Ollama (la familia unificada es
-  reciente) — su validación empírica se hace en el nodo GPU.
-- **Producción (in-environment)**: nodo GPU propio (Linode/on-prem) corriendo
-  `gemma4:12b` vía Ollama o vLLM. El backend LLM es OpenAI-compatible/
-  configurable, así que dev → GPU → fallback no cambian el código de mtia.
+- **Modelo objetivo: `gemma4:12b`.** Hace tool-calling fiable y resuelve bien
+  nodos y períodos relativos. Requiere **Ollama ≥ 0.30.4** (el soporte de la
+  12B unificada se agregó en 0.30.3 pero el manifest exige 0.30.4; usar el
+  estable cuando salga, o el pre-release `v0.30.4-rcN`). `gemma4:e4b` sirve para
+  *plumbing* pero su tool-calling es débil.
+- **Apuntar mtia al modelo**: `LLM_MODEL=gemma4:12b` (ver Variables de entorno).
+- **Producción (in-environment)**: nodo GPU propio (Linode/on-prem) con
+  `gemma4:12b` vía Ollama o vLLM. El backend LLM se selecciona por env
+  (`OLLAMA_URL`/`LLM_MODEL`), así que dev → GPU no cambian el código de mtia.
 
-### Ejemplos (las 3 preguntas canónicas)
+### Ejemplos
+
+La forma más simple de probar es la CLI/TUI (dentro del contenedor; firma un
+JWT desde `JWT_SECRET`):
 
 ```bash
-TOKEN=...   # JWT con claim client
-BASE="http://localhost:8008/plantagent/chat"
+# interactivo
+docker compose exec -it mtia python -m modules.plantagent.tui \
+    --client <cliente> --plant-id <id>
 
-curl -N -H "Authorization: JWT $TOKEN" \
-  "$BASE?client=<cliente>&plant_id=<id>&question=¿qué%20equipo%20afecta%20más%20el%20OEE?"
-
-curl -N -H "Authorization: JWT $TOKEN" \
-  "$BASE?client=<cliente>&plant_id=<id>&question=¿cuál%20fue%20la%20detención%20más%20repetida%20en%20la%20Línea%202%20los%20últimos%203%20días?"
-
-curl -N -H "Authorization: JWT $TOKEN" \
-  "$BASE?client=<cliente>&plant_id=<id>&question=¿cuánto%20produjo%20el%20equipo%20<devid>%20hoy?"
+# una sola pregunta
+docker compose exec -T mtia python -m modules.plantagent.tui \
+    --client <cliente> --plant-id <id> \
+    --question "¿qué máquina estuvo más tiempo detenida ayer?"
 ```
+
+Preguntas que cubre (por nombre, cualquier nodo, períodos relativos):
+- *¿qué equipo afecta más el OEE esta semana?* → `rank_oee`
+- *¿qué máquina estuvo más tiempo detenida ayer?* → `rank_downtime`
+- *¿OEE de la sección Químicos el mes pasado?* → `oee` (agrega la sección)
+- *¿cuál fue el mejor día de la semana pasada para la Máquina de tostadores?* → `daily_oee`
+
+Vía HTTP directo (SSE): `POST /plantagent/chat?client=&plant_id=&question=`
+con `Authorization: JWT <token>`.
 
 ### Tests
 
@@ -318,7 +346,8 @@ herramientas, loop de tool-calling, auth y forma del SSE.
 
 | Síntoma | Causa / solución |
 |---|---|
-| `ollama pull gemma4:12b` → `412 requires a newer version` | El 12B unificado aún no está en Ollama liberado. Usar el nodo GPU (vLLM) o esperar a que la app oficial auto-actualice. |
+| `ollama pull gemma4:12b` → `412 requires a newer version` | El manifest de la 12B exige Ollama ≥ 0.30.4. Actualizar a 0.30.4 estable (`brew upgrade --cask ollama-app`) o correr el pre-release `v0.30.4-rcN` (binario del `.tgz` de GitHub). |
 | `llama-server binary not found` en macOS | La **fórmula** de Homebrew `ollama` viene incompleta. Usar la **app oficial** (`brew install --cask ollama-app` o ollama.com), no la fórmula. |
 | `503` en `/plantagent/chat` | mtapi2 no responde. Verificar el contenedor `mtapi2`. |
-| Respuestas con tool-calling poco fiables en dev | `gemma4:e4b` es débil para tool-calling; validar con `gemma4:12b` en GPU. |
+| "no encontré '<nombre>'" | El nodo no existe o el nombre no coincide; el error lista los disponibles. Probá con el nombre exacto del equipo/línea/sección. |
+| Respuestas con tool-calling poco fiables | `gemma4:e4b` es débil; usar `gemma4:12b` (`LLM_MODEL=gemma4:12b`, Ollama ≥ 0.30.4). |
