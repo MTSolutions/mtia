@@ -289,6 +289,31 @@ def test_daily_oee_advertised():
     assert "daily_oee" in {t["function"]["name"] for t in tools.TOOL_SPECS}
 
 
+# --- rank machines by downtime -----------------------------------------------
+
+def test_rank_downtime_orders_machines_by_total_stop_time():
+    # pareto([devid]) returns codstates whose time_s sum is the device downtime.
+    pareto_by_dev = {
+        1079: {"codstates": [{"time_s": 2.0}, {"time_s": 1.0}]},   # 3.0 h
+        1080: {"codstates": [{"time_s": 5.0}]},                    # 5.0 h
+        1081: {"codstates": []},                                   # 0 -> dropped
+    }
+
+    def call(fn, client, start, end, ids):
+        return pareto_by_dev[ids[0]]
+
+    ctx = make_ctx(device_ids=(1079, 1080, 1081),
+                   names={1079: "A", 1080: "B", 1081: "C"}, mtapi_call=call)
+    r = tools.dispatch("rank_downtime", {"period": "ayer"}, ctx)
+    assert [d["devid"] for d in r["devices"]] == [1080, 1079]      # most downtime first
+    assert r["devices"][0] == {"devid": 1080, "name": "B", "downtime_h": 5.0}
+    assert r["type"] == "plant"     # no node given -> whole plant
+
+
+def test_rank_downtime_advertised():
+    assert "rank_downtime" in {t["function"]["name"] for t in tools.TOOL_SPECS}
+
+
 # --- no-data flagging (T8) ----------------------------------------------------
 
 def test_indicator_none_value_flags_no_data():

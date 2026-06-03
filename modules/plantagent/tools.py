@@ -194,6 +194,38 @@ def _tool_rank_oee(args: dict, ctx: ToolContext) -> dict:
     }
 
 
+def _tool_rank_downtime(args: dict, ctx: ToolContext) -> dict:
+    """Rank EQUIPMENT by total stopped time (most downtime first) over a period.
+
+    Distinct from top_stops (which ranks stop *reasons*). Sums each device's
+    operational stop time via pareto([devid]) — a per-device fan-out; for large
+    nodes this is several mtapi2 calls.
+    """
+    if args.get("node") or args.get("device"):
+        label, ntype, dev_ids = _resolve_node(args, ctx)
+    else:
+        dev_ids = list(ctx.device_ids)
+        label, ntype = ctx.plant_name or "planta", "plant"
+    start, end = _resolve_period(args, ctx)
+    rows = []
+    for devid in dev_ids:
+        data = _call(ctx, "pareto", start, end, [devid]) or {}
+        hours = sum((r.get("time_s") or 0) for r in data.get("codstates", []))
+        if hours > 0:
+            rows.append((devid, round(hours, 2)))
+    rows.sort(key=lambda t: t[1], reverse=True)
+    return {
+        "node": label,
+        "type": ntype,
+        "ranking": "most_downtime_first",
+        "devices": [
+            {"devid": d, "name": ctx.name_for(d), "downtime_h": h} for d, h in rows[:10]
+        ],
+        "no_data": not rows,
+        "period": [start.isoformat(), end.isoformat()],
+    }
+
+
 def _tool_top_stops(args: dict, ctx: ToolContext) -> dict:
     """Most significant stops in a period, by total time or by occurrence count.
 
@@ -429,10 +461,34 @@ _DAILY_OEE_SPEC = {
     },
 }
 
+_RANK_DOWNTIME_SPEC = {
+    "type": "function",
+    "function": {
+        "name": "rank_downtime",
+        "description": "Clasifica los EQUIPOS por tiempo total detenido (mayor "
+                       "primero) en un período, dentro de una planta/línea/sección. "
+                       "Úsalo para '¿qué máquina estuvo más tiempo detenida?'. "
+                       "Es distinto de top_stops (que clasifica motivos de detención).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "node": {
+                    "type": "string",
+                    "description": "Nombre de planta/línea/sección (opcional; por "
+                                   "defecto, toda la planta).",
+                },
+                "period": _PERIOD_PROP,
+            },
+            "required": ["period"],
+        },
+    },
+}
+
 # Advertised to the LLM.
 TOOL_SPECS = (
     [_indicator_spec(n, d) for n, d in _INDICATORS.items()]
-    + [_RANK_OEE_SPEC, _TOP_STOPS_SPEC, _PRODUCTION_SPEC, _DAILY_OEE_SPEC]
+    + [_RANK_OEE_SPEC, _TOP_STOPS_SPEC, _PRODUCTION_SPEC, _DAILY_OEE_SPEC,
+       _RANK_DOWNTIME_SPEC]
 )
 
 _DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
@@ -442,6 +498,7 @@ _DISPATCH["rank_oee"] = _tool_rank_oee
 _DISPATCH["top_stops"] = _tool_top_stops
 _DISPATCH["production"] = _tool_production
 _DISPATCH["daily_oee"] = _tool_daily_oee
+_DISPATCH["rank_downtime"] = _tool_rank_downtime
 
 
 def dispatch(name: str, args: dict, ctx: ToolContext) -> dict:
