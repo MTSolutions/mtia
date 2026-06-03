@@ -87,8 +87,14 @@ _INDICATORS = {
 
 _PERIOD_PROP = {
     "type": "string",
-    "description": "Período relativo: 'hoy', 'ayer', 'últimos 3 días', "
-                   "'esta semana', 'este mes'.",
+    "description": (
+        "Período relativo. Usa EXACTAMENTE uno de estos valores: 'hoy', 'ayer', "
+        "'anteayer', 'esta semana', 'semana pasada', 'este mes', 'mes pasado', o "
+        "'últimos N días' (con N entero, p.ej. 'últimos 7 días'). "
+        "Mapea la frase de la pregunta al valor correcto: "
+        "'la semana pasada' → 'semana pasada'; 'el mes pasado' → 'mes pasado'; "
+        "'esta semana' → 'esta semana'. No uses 'este mes' para 'la semana pasada'."
+    ),
 }
 
 

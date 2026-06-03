@@ -19,6 +19,9 @@ SYSTEM_PROMPT = (
     "el indicador equipo por equipo.\n"
     "- Para 'producción vs plan' combina la herramienta de producción con la de "
     "cumplimiento. La atraso/desviación por orden no está disponible aún.\n"
+    "- En el parámetro 'period' usa el valor que corresponda EXACTAMENTE a la "
+    "pregunta: 'la semana pasada' → 'semana pasada' (no 'este mes'); 'el mes "
+    "pasado' → 'mes pasado'; 'hoy'/'ayer'/'esta semana'/'últimos N días' igual.\n"
     "- Responde en español neutro (sin voseo), de forma breve y precisa, "
     "indicando el equipo y el período consultado.\n"
 )
