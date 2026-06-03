@@ -7,13 +7,14 @@ corresponding mtapi2 function via the injected client, and (3) returns a
 JSON-able result the agent feeds back to the model.
 
 The LLM never computes figures and never supplies the client — that comes from
-the JWT via ToolContext.
+the JWT via ToolContext. Comparisons ("which equipment is worst") are computed
+in code from official per-device figures, not by the model.
 """
 from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Iterator
 
 from modules.plantagent import mtapi, periods
 
@@ -35,33 +36,33 @@ class ToolContext:
     mtapi_call: Callable | None = None
 
 
-# Advertised to the LLM. One entry per tool; MVP skeleton ships only `oee`.
-TOOL_SPECS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "oee",
-            "description": (
-                "OEE (eficiencia general de equipos) OFICIAL de un equipo en un "
-                "período. Devuelve un número entre 0 y 1."),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "devid": {
-                        "type": "integer",
-                        "description": "ID del equipo; debe pertenecer a la planta.",
-                    },
-                    "period": {
-                        "type": "string",
-                        "description": "Período relativo: 'hoy', 'ayer', "
-                                       "'últimos 3 días', 'esta semana', 'este mes'.",
-                    },
-                },
-                "required": ["devid", "period"],
-            },
-        },
-    },
-]
+# Per-device indicators: name -> human description. Each maps 1:1 to an mtapi2
+# function taking (client, start, end, devid) and returning a 0..1 ratio.
+_INDICATORS = {
+    "oee": "OEE (eficiencia general de equipos)",
+    "disponibilidad": "Disponibilidad",
+    "rendimiento": "Rendimiento (desempeño)",
+    "calidad": "Calidad",
+    "cumplimiento": "Cumplimiento (puede no estar disponible para todos los clientes)",
+}
+
+_PERIOD_PROP = {
+    "type": "string",
+    "description": "Período relativo: 'hoy', 'ayer', 'últimos 3 días', "
+                   "'esta semana', 'este mes'.",
+}
+
+
+def _mtapi(ctx: ToolContext) -> Callable:
+    return ctx.mtapi_call or mtapi.call
+
+
+def _call(ctx: ToolContext, fn: str, *args):
+    try:
+        return _mtapi(ctx)(fn, ctx.client, *args)
+    except mtapi.MtapiError as e:
+        # Includes MtapiUnavailable ("indicator no disponible para esta planta").
+        raise ToolError(str(e))
 
 
 def _resolve_devid(args: dict, ctx: ToolContext) -> int:
@@ -84,24 +85,98 @@ def _resolve_period(args: dict, ctx: ToolContext) -> tuple[dt.datetime, dt.datet
         raise ToolError(str(e))
 
 
-def _tool_oee(args: dict, ctx: ToolContext) -> dict:
-    devid = _resolve_devid(args, ctx)
+def _make_indicator_tool(fn_name: str) -> Callable[[dict, ToolContext], dict]:
+    def _tool(args: dict, ctx: ToolContext) -> dict:
+        devid = _resolve_devid(args, ctx)
+        start, end = _resolve_period(args, ctx)
+        value = _call(ctx, fn_name, start, end, devid)
+        return {
+            "indicator": fn_name,
+            "devid": devid,
+            "value": value,
+            "period": [start.isoformat(), end.isoformat()],
+        }
+    return _tool
+
+
+def _iter_dev_nodes(node: dict) -> Iterator[dict]:
+    """Depth-first yield of every ``type == 'dev'`` node in a (nested) devtree."""
+    if node.get("type") == "dev":
+        yield node
+    for child_key in ("plants", "lines", "sections", "devs"):
+        for child in node.get(child_key, []):
+            yield from _iter_dev_nodes(child)
+
+
+def _tool_rank_oee(args: dict, ctx: ToolContext) -> dict:
+    """Rank the plant's devices by OEE (worst first) from a single devtree call.
+
+    devtree computes the official per-device OEE server-side; we only sort —
+    the model never does arithmetic.
+    """
     start, end = _resolve_period(args, ctx)
-    call = ctx.mtapi_call or mtapi.call
-    try:
-        value = call("oee", ctx.client, start, end, devid)
-    except mtapi.MtapiError as e:
-        raise ToolError(str(e))
+    tree = _call(ctx, "devtree", start, end, "plant", ctx.plant_id, ["oee"], False)
+    in_scope = set(ctx.device_ids)
+    devs = [
+        n for n in _iter_dev_nodes(tree)
+        if n.get("oee") is not None and n.get("id") in in_scope
+    ]
+    devs.sort(key=lambda n: n["oee"])  # ascending: worst OEE first
     return {
-        "devid": devid,
-        "oee": value,
+        "indicator": "oee",
+        "ranking": "worst_first",
+        "devices": [
+            {"devid": n["id"], "name": n.get("name"), "oee": n["oee"]}
+            for n in devs[:10]
+        ],
         "period": [start.isoformat(), end.isoformat()],
     }
 
 
-_DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
-    "oee": _tool_oee,
+def _indicator_spec(name: str, desc: str) -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": "{} OFICIAL de un equipo en un período. "
+                           "Devuelve un número entre 0 y 1.".format(desc),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "devid": {
+                        "type": "integer",
+                        "description": "ID del equipo; debe pertenecer a la planta.",
+                    },
+                    "period": _PERIOD_PROP,
+                },
+                "required": ["devid", "period"],
+            },
+        },
+    }
+
+
+_RANK_OEE_SPEC = {
+    "type": "function",
+    "function": {
+        "name": "rank_oee",
+        "description": "Clasifica los equipos de la planta por OEE (peor primero) "
+                       "en un período. Úsalo para preguntas comparativas como "
+                       "'¿qué equipo afecta más el OEE?' o 'el peor equipo'.",
+        "parameters": {
+            "type": "object",
+            "properties": {"period": _PERIOD_PROP},
+            "required": ["period"],
+        },
+    },
 }
+
+# Advertised to the LLM.
+TOOL_SPECS = [_indicator_spec(n, d) for n, d in _INDICATORS.items()] + [_RANK_OEE_SPEC]
+
+_DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
+    name: _make_indicator_tool(name) for name in _INDICATORS
+}
+_DISPATCH["rank_oee"] = _tool_rank_oee
 
 
 def dispatch(name: str, args: dict, ctx: ToolContext) -> dict:
