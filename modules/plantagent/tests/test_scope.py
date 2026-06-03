@@ -75,3 +75,27 @@ def test_device_ids_for_a_single_device_returns_itself():
     call = make_call({"devtree": dev_tree})
     ids = scope.device_ids("degasa", "dev", 101, START, END, mtapi_call=call)
     assert ids == [101]
+
+
+NAMED_TREE = {
+    "id": 7, "name": "Planta 1", "type": "plant",
+    "lines": [],
+    "sections": [{"id": 20, "name": "Químicos", "type": "section", "devs": [
+        {"id": 10, "name": "Envasadora", "type": "dev"}]}],
+    "devs": [{"id": 11, "name": "Sopladora", "type": "dev"}],
+}
+
+
+def test_named_tree_calls_devtree_named_with_client():
+    call = make_call({"devtree_named": NAMED_TREE})
+    tree = scope.named_tree("degasa", 7, mtapi_call=call)
+    assert tree["name"] == "Planta 1"
+    assert call.calls[0][:2] == ("devtree_named", "degasa")
+    assert call.calls[0][2] == ("plant", 7)
+
+
+def test_devices_in_collects_named_devices():
+    assert scope.devices_in(NAMED_TREE) == [
+        {"id": 10, "name": "Envasadora"},
+        {"id": 11, "name": "Sopladora"},
+    ]

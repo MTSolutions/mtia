@@ -25,15 +25,53 @@ class ToolError(ValueError):
 
 @dataclass
 class ToolContext:
-    """Per-request scope passed to every tool. Built by the router from the JWT."""
+    """Per-request scope passed to every tool. Built by the router from the JWT.
+
+    ``devices`` is the name-annotated source of truth (``[{id, name}]``); the
+    agent presents and resolves equipment by name, not raw id.
+    """
     client: str
     plant_id: int
-    device_ids: list[int]
+    devices: list[dict]       # [{"id": int, "name": str}]
     now: dt.datetime          # timezone-aware reference instant
     tz: str                   # IANA timezone of the plant
+    plant_name: str | None = None
     # Resolved to mtapi.call at call time when None, so it stays patchable and
     # tests can inject a stub.
     mtapi_call: Callable | None = None
+
+    @property
+    def device_ids(self) -> list[int]:
+        return [d["id"] for d in self.devices]
+
+    def name_for(self, devid: int) -> str | None:
+        for d in self.devices:
+            if d["id"] == devid:
+                return d.get("name")
+        return None
+
+    def resolve_device(self, ref) -> int | None:
+        """Map a device reference (id, numeric string, or name) to a devid.
+
+        Names match case-insensitively (exact first, then substring). Returns
+        None if nothing in scope matches.
+        """
+        if isinstance(ref, bool):
+            return None
+        if isinstance(ref, int):
+            return ref if ref in self.device_ids else None
+        s = str(ref).strip()
+        if s.lstrip("-").isdigit():
+            devid = int(s)
+            return devid if devid in self.device_ids else None
+        low = s.lower()
+        for d in self.devices:
+            if (d.get("name") or "").strip().lower() == low:
+                return d["id"]
+        for d in self.devices:
+            if low and low in (d.get("name") or "").strip().lower():
+                return d["id"]
+        return None
 
 
 # Per-device indicators: name -> human description. Each maps 1:1 to an mtapi2
@@ -65,15 +103,19 @@ def _call(ctx: ToolContext, fn: str, *args):
         raise ToolError(str(e))
 
 
-def _resolve_devid(args: dict, ctx: ToolContext) -> int:
-    raw = args.get("devid")
-    try:
-        devid = int(raw)
-    except (TypeError, ValueError):
-        raise ToolError("devid inválido: {!r}".format(raw))
-    if devid not in ctx.device_ids:
+def _resolve_device(args: dict, ctx: ToolContext) -> int:
+    """Resolve the 'device' (name or id) argument to a devid within the plant.
+
+    Accepts the legacy 'devid' key too. Raises ToolError listing available
+    equipment names when the reference can't be matched.
+    """
+    ref = args.get("device", args.get("devid"))
+    devid = ctx.resolve_device(ref)
+    if devid is None:
+        names = [d.get("name") for d in ctx.devices][:30]
         raise ToolError(
-            "el equipo {} no pertenece a la planta {}".format(devid, ctx.plant_id))
+            "no encontré el equipo {!r} en la planta. Equipos disponibles: {}".format(
+                ref, names))
     return devid
 
 
@@ -87,12 +129,13 @@ def _resolve_period(args: dict, ctx: ToolContext) -> tuple[dt.datetime, dt.datet
 
 def _make_indicator_tool(fn_name: str) -> Callable[[dict, ToolContext], dict]:
     def _tool(args: dict, ctx: ToolContext) -> dict:
-        devid = _resolve_devid(args, ctx)
+        devid = _resolve_device(args, ctx)
         start, end = _resolve_period(args, ctx)
         value = _call(ctx, fn_name, start, end, devid)
         return {
             "indicator": fn_name,
             "devid": devid,
+            "device": ctx.name_for(devid),
             "value": value,
             "no_data": value is None,
             "period": [start.isoformat(), end.isoformat()],
@@ -107,15 +150,6 @@ def _iter_dev_nodes(node: dict) -> Iterator[dict]:
     for child_key in ("plants", "lines", "sections", "devs"):
         for child in node.get(child_key, []):
             yield from _iter_dev_nodes(child)
-
-
-def _device_names(ctx: ToolContext) -> dict:
-    """Best-effort devid -> name map (for readable rankings). Never fatal."""
-    try:
-        devs = _call(ctx, "getdevs")
-        return {d["id"]: d.get("name") for d in devs if isinstance(d, dict)}
-    except Exception:  # names are cosmetic; never break the tool over them
-        return {}
 
 
 def _tool_rank_oee(args: dict, ctx: ToolContext) -> dict:
@@ -137,12 +171,11 @@ def _tool_rank_oee(args: dict, ctx: ToolContext) -> dict:
             scores.append((devid, value))
 
     scores.sort(key=lambda t: t[1])  # ascending: worst OEE first
-    names = _device_names(ctx) if scores else {}
     return {
         "indicator": "oee",
         "ranking": "worst_first",
         "devices": [
-            {"devid": d, "name": names.get(d), "oee": v} for d, v in scores[:10]
+            {"devid": d, "name": ctx.name_for(d), "oee": v} for d, v in scores[:10]
         ],
         "no_data": not scores,
         "period": [start.isoformat(), end.isoformat()],
@@ -182,7 +215,7 @@ def _tool_top_stops(args: dict, ctx: ToolContext) -> dict:
     line = args.get("line")
 
     if line:
-        tree = _call(ctx, "devtree", start, end, "plant", ctx.plant_id, [], False)
+        tree = _call(ctx, "devtree_named", "plant", ctx.plant_id)
         line_nodes = _collect_line_nodes(tree)
         match = _match_line(line_nodes, line)
         if match is None:
@@ -231,7 +264,7 @@ _PROD_MEASURE_FN = {
 
 
 def _tool_production(args: dict, ctx: ToolContext) -> dict:
-    devid = _resolve_devid(args, ctx)
+    devid = _resolve_device(args, ctx)
     measure = args.get("measure") or "standard"
     fn = _PROD_MEASURE_FN.get(measure)
     if fn is None:
@@ -241,6 +274,7 @@ def _tool_production(args: dict, ctx: ToolContext) -> dict:
     produced = _call(ctx, fn, start, end, devid)
     return {
         "devid": devid,
+        "device": ctx.name_for(devid),
         "measure": measure,
         "produced": produced,
         # The numeric unit of measure belongs to the device (Device.unit);
@@ -260,13 +294,13 @@ def _indicator_spec(name: str, desc: str) -> dict:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "devid": {
-                        "type": "integer",
-                        "description": "ID del equipo; debe pertenecer a la planta.",
+                    "device": {
+                        "type": "string",
+                        "description": "Nombre del equipo (o su id) dentro de la planta.",
                     },
                     "period": _PERIOD_PROP,
                 },
-                "required": ["devid", "period"],
+                "required": ["device", "period"],
             },
         },
     }
@@ -327,9 +361,9 @@ _PRODUCTION_SPEC = {
         "parameters": {
             "type": "object",
             "properties": {
-                "devid": {
-                    "type": "integer",
-                    "description": "ID del equipo; debe pertenecer a la planta.",
+                "device": {
+                    "type": "string",
+                    "description": "Nombre del equipo (o su id) dentro de la planta.",
                 },
                 "period": _PERIOD_PROP,
                 "measure": {
@@ -342,7 +376,7 @@ _PRODUCTION_SPEC = {
                                    "(toneladas). Por defecto 'standard'.",
                 },
             },
-            "required": ["devid", "period"],
+            "required": ["device", "period"],
         },
     },
 }

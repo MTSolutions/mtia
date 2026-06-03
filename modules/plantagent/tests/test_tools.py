@@ -12,9 +12,12 @@ UTC = dt.timezone.utc
 NOW = dt.datetime(2026, 6, 3, 12, 0, tzinfo=UTC)
 
 
-def make_ctx(device_ids=(1079, 1080, 1081), mtapi_call=None):
+def make_ctx(device_ids=(1079, 1080, 1081), mtapi_call=None, names=None, devices=None):
+    if devices is None:
+        names = names or {}
+        devices = [{"id": d, "name": names.get(d)} for d in device_ids]
     return ToolContext(
-        client="degasa", plant_id=7, device_ids=list(device_ids),
+        client="degasa", plant_id=7, devices=devices,
         now=NOW, tz="America/Santiago", mtapi_call=mtapi_call,
     )
 
@@ -91,9 +94,9 @@ def oee_by_dev(oee_map, names=None):
 
 
 def test_rank_oee_returns_worst_first_from_per_device_calls():
-    call = oee_by_dev({1079: 0.82, 1080: 0.55, 1081: 0.73},
-                      names={1080: "Etiquetadora"})
-    ctx = make_ctx(device_ids=(1079, 1080, 1081), mtapi_call=call)
+    call = oee_by_dev({1079: 0.82, 1080: 0.55, 1081: 0.73})
+    ctx = make_ctx(device_ids=(1079, 1080, 1081), names={1080: "Etiquetadora"},
+                   mtapi_call=call)
     result = tools.dispatch("rank_oee", {"period": "últimos 3 días"}, ctx)
 
     # One oee() call per device (no faulting devtree-with-indicators).
@@ -156,18 +159,18 @@ def test_top_stops_by_count_orders_by_occurrences():
 
 
 def test_top_stops_line_scoped_resolves_devices_then_paretos():
-    call = recording_call({"devtree": PLANT_TREE_LINES, "pareto": PARETO})
+    call = recording_call({"devtree_named": PLANT_TREE_LINES, "pareto": PARETO})
     ctx = make_ctx(device_ids=(1079, 1080, 1081), mtapi_call=call)
     result = tools.dispatch("top_stops", {"period": "hoy", "line": "Línea 2", "by": "count"}, ctx)
     assert result["scope"] == "Línea 2"
     fns = [c[0] for c in call.calls]
-    assert fns == ["devtree", "pareto"]
+    assert fns == ["devtree_named", "pareto"]
     # pareto called with only Línea 2's devices
     assert call.calls[1][2][-1] == [1080, 1081]
 
 
 def test_top_stops_unknown_line_raises_with_available_names():
-    call = recording_call({"devtree": PLANT_TREE_LINES})
+    call = recording_call({"devtree_named": PLANT_TREE_LINES})
     ctx = make_ctx(mtapi_call=call)
     with pytest.raises(tools.ToolError) as ei:
         tools.dispatch("top_stops", {"period": "hoy", "line": "Línea 9"}, ctx)
@@ -217,6 +220,33 @@ def test_production_out_of_scope_devid_raises():
     ctx = make_ctx(device_ids=(1079,), mtapi_call=call)
     with pytest.raises(tools.ToolError):
         tools.dispatch("production", {"devid": 9999, "period": "hoy"}, ctx)
+    assert call.calls == []
+
+
+# --- device resolution by name -----------------------------------------------
+
+def test_indicator_accepts_device_by_name():
+    call = recording_call({"oee": 0.9})
+    ctx = make_ctx(devices=[{"id": 1500, "name": "Inyectoras de bases"}], mtapi_call=call)
+    r = tools.dispatch("oee", {"device": "Inyectoras de bases", "period": "hoy"}, ctx)
+    assert r["devid"] == 1500
+    assert r["device"] == "Inyectoras de bases"     # result labelled by name
+    assert call.calls[0][2][-1] == 1500             # mtapi called with the id
+
+
+def test_device_name_match_is_case_insensitive_and_partial():
+    call = recording_call({"oee": 0.9})
+    ctx = make_ctx(devices=[{"id": 1500, "name": "Inyectoras de bases"}], mtapi_call=call)
+    r = tools.dispatch("oee", {"device": "inyectoras", "period": "hoy"}, ctx)
+    assert r["devid"] == 1500
+
+
+def test_unknown_device_name_raises_listing_options():
+    call = recording_call({"oee": 0.9})
+    ctx = make_ctx(devices=[{"id": 1500, "name": "Inyectoras de bases"}], mtapi_call=call)
+    with pytest.raises(tools.ToolError) as ei:
+        tools.dispatch("oee", {"device": "Robot soldador", "period": "hoy"}, ctx)
+    assert "Inyectoras de bases" in str(ei.value)
     assert call.calls == []
 
 

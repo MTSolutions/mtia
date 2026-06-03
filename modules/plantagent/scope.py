@@ -58,3 +58,28 @@ def device_ids(
     """
     tree = mtapi_call("devtree", client, start, end, node_type, node_id, [], False)
     return _collect_dev_ids(tree)
+
+
+def named_tree(client: str, plant_id: int, mtapi_call: Callable = mtapi.call) -> dict:
+    """The plant's name-annotated configuration tree (via mtapi2 devtree_named).
+
+    Lightweight (no dates/indicators) and fault-free. Caller must have already
+    validated that plant_id belongs to the client (devtree_named is not
+    client-scoped) — see validate_plant.
+    """
+    return mtapi_call("devtree_named", client, "plant", plant_id)
+
+
+def _collect_named_devs(node: dict, acc: list[dict]) -> None:
+    if node.get("type") == "dev":
+        acc.append({"id": node["id"], "name": node.get("name")})
+    for child_key in ("plants", "lines", "sections", "devs"):
+        for child in node.get(child_key, []):
+            _collect_named_devs(child, acc)
+
+
+def devices_in(tree: dict) -> list[dict]:
+    """Flat ``[{id, name}]`` of every device in a named tree."""
+    acc: list[dict] = []
+    _collect_named_devs(tree, acc)
+    return acc

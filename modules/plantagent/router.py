@@ -37,10 +37,9 @@ async def chat(
     """Stream a grounded answer about a plant's official indicators as SSE."""
     require_client_match(client, claims)
     try:
-        scope.validate_plant(client, plant_id)
-        now = dt.datetime.now(dt.timezone.utc)
-        naive = now.replace(tzinfo=None)
-        device_ids = scope.device_ids(client, "plant", plant_id, naive, naive)
+        plant = scope.validate_plant(client, plant_id)   # enforces plant ∈ client
+        tree = scope.named_tree(client, plant_id)         # name-annotated config
+        devices = scope.devices_in(tree)
     except scope.PlantNotFound as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
     except mtapi.MtapiError:
@@ -51,9 +50,10 @@ async def chat(
     ctx = ToolContext(
         client=client,
         plant_id=plant_id,
-        device_ids=device_ids,
-        now=now,
+        devices=devices,
+        now=dt.datetime.now(dt.timezone.utc),
         tz=DEFAULT_TZ,
+        plant_name=tree.get("name") or plant.get("name"),
     )
 
     async def event_stream() -> AsyncIterator[dict]:

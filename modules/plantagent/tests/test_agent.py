@@ -19,7 +19,8 @@ def make_ctx(device_ids=(1079,), mtapi_result=0.87):
         return mtapi_result
 
     ctx = ToolContext(
-        client="degasa", plant_id=7, device_ids=list(device_ids),
+        client="degasa", plant_id=7,
+        devices=[{"id": d, "name": None} for d in device_ids],
         now=NOW, tz="America/Santiago", mtapi_call=_mtapi,
     )
     ctx_calls = calls  # expose for assertions

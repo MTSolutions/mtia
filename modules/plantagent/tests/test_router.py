@@ -32,8 +32,11 @@ def app(monkeypatch):
 @pytest.fixture
 def client(app, monkeypatch):
     # Scope resolution stubbed -> no mtapi2 network.
-    monkeypatch.setattr(scope, "validate_plant", lambda c, p, **k: {"id": p, "name": "P"})
-    monkeypatch.setattr(scope, "device_ids", lambda *a, **k: [1079])
+    monkeypatch.setattr(scope, "validate_plant", lambda c, p, **k: {"id": p, "name": "Planta"})
+    monkeypatch.setattr(scope, "named_tree", lambda c, p, **k: {
+        "id": p, "name": "Planta", "type": "plant",
+        "devs": [{"id": 1079, "name": "Equipo X", "type": "dev"}]})
+    # devices_in is pure; no stub needed.
     # mtapi2 indicator call stubbed (resolved at call time via ctx default).
     monkeypatch.setattr(mtapi, "call", lambda fn, c, *a: 0.87)
 
@@ -99,7 +102,7 @@ def test_unknown_plant_returns_404(client, monkeypatch):
 def test_mtapi_unavailable_returns_503(client, monkeypatch):
     def boom(*a, **k):
         raise mtapi.MtapiError("mtapi2 unreachable")
-    monkeypatch.setattr(scope, "device_ids", boom)
+    monkeypatch.setattr(scope, "named_tree", boom)
 
     r = client.post("/plantagent/chat",
                     params={"client": "degasa", "plant_id": 7, "question": "OEE?"},

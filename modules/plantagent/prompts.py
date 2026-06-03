@@ -24,11 +24,14 @@ SYSTEM_PROMPT = (
 
 
 def build_user_message(question: str, ctx: ToolContext) -> str:
-    """Frame the question with the device scope and reference time for the model."""
-    devs = ", ".join(str(d) for d in ctx.device_ids[:50])
-    more = "" if len(ctx.device_ids) <= 50 else " (y más)"
+    """Frame the question with the named device scope and reference time."""
+    devs = "; ".join(
+        "{} (id {})".format(d.get("name") or "?", d["id"]) for d in ctx.devices[:50])
+    more = "" if len(ctx.devices) <= 50 else " (y más)"
+    plant = ctx.plant_name or "planta {}".format(ctx.plant_id)
     return (
         "Pregunta: {q}\n\n"
-        "Contexto: planta {pid}. Equipos disponibles (devid): {devs}{more}. "
+        "Contexto: {plant}. Equipos disponibles: {devs}{more}.\n"
+        "Refiérete a los equipos por su nombre. "
         "Fecha/hora de referencia: {now}."
-    ).format(q=question, pid=ctx.plant_id, devs=devs, more=more, now=ctx.now.isoformat())
+    ).format(q=question, plant=plant, devs=devs, more=more, now=ctx.now.isoformat())
