@@ -9,7 +9,7 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException, status
 from sse_starlette.sse import EventSourceResponse
 
-from modules.plantagent import agent, scope
+from modules.plantagent import agent, mtapi, scope
 from modules.plantagent.tools import ToolContext
 from modules.rag.auth import JwtClaims, require_client_match, verify_jwt
 
@@ -38,12 +38,15 @@ async def chat(
     require_client_match(client, claims)
     try:
         scope.validate_plant(client, plant_id)
+        now = dt.datetime.now(dt.timezone.utc)
+        naive = now.replace(tzinfo=None)
+        device_ids = scope.device_ids(client, "plant", plant_id, naive, naive)
     except scope.PlantNotFound as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
-
-    now = dt.datetime.now(dt.timezone.utc)
-    naive = now.replace(tzinfo=None)
-    device_ids = scope.device_ids(client, "plant", plant_id, naive, naive)
+    except mtapi.MtapiError:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "servicio de indicadores (mtapi2) no disponible")
 
     ctx = ToolContext(
         client=client,

@@ -94,6 +94,7 @@ def _make_indicator_tool(fn_name: str) -> Callable[[dict, ToolContext], dict]:
             "indicator": fn_name,
             "devid": devid,
             "value": value,
+            "no_data": value is None,
             "period": [start.isoformat(), end.isoformat()],
         }
     return _tool
@@ -129,6 +130,7 @@ def _tool_rank_oee(args: dict, ctx: ToolContext) -> dict:
             {"devid": n["id"], "name": n.get("name"), "oee": n["oee"]}
             for n in devs[:10]
         ],
+        "no_data": not devs,
         "period": [start.isoformat(), end.isoformat()],
     }
 
@@ -198,33 +200,38 @@ def _tool_top_stops(args: dict, ctx: ToolContext) -> dict:
             }
             for r in rows[:10]
         ],
+        "no_data": not rows,
         "period": [start.isoformat(), end.isoformat()],
     }
 
 
-# Production unit -> mtapi2 function. Note: we never pass an extra `unit` arg to
-# mtapi2 (default prod_dev_kp takes only start/end/devid) — the choice is which
-# function to call.
-_PROD_FN = {
-    "units": "prod_dev_t",     # raw units
-    "kp": "prod_dev_kp",       # kp-weighted units
-    "tons": "total_tons",      # tonnage
+# Production *measure* -> mtapi2 function. These are different production
+# calculations, NOT units of measure: the unit (cajas, kg, …) belongs to the
+# Device (Device.unit). kp is a per-product-spec multiplier, not a unit.
+# 'standard' (prod_dev_kp, counter × kp) is the canonical default counter.
+_PROD_MEASURE_FN = {
+    "standard": "prod_dev_kp",   # counter weighted by the product-spec kp (default)
+    "counter": "prod_dev_t",     # raw counter, without kp
+    "tons": "total_tons",        # tonnage
 }
 
 
 def _tool_production(args: dict, ctx: ToolContext) -> dict:
     devid = _resolve_devid(args, ctx)
-    unit = args.get("unit") or "kp"
-    fn = _PROD_FN.get(unit)
+    measure = args.get("measure") or "standard"
+    fn = _PROD_MEASURE_FN.get(measure)
     if fn is None:
         raise ToolError(
-            "unidad inválida: {!r} (usa 'units', 'kp' o 'tons')".format(unit))
+            "medida inválida: {!r} (usa 'standard', 'counter' o 'tons')".format(measure))
     start, end = _resolve_period(args, ctx)
     produced = _call(ctx, fn, start, end, devid)
     return {
         "devid": devid,
-        "unit": unit,
+        "measure": measure,
         "produced": produced,
+        # The numeric unit of measure belongs to the device (Device.unit);
+        # reporting that label is a follow-up (no mtapi2 getter yet).
+        "no_data": produced is None,
         "period": [start.isoformat(), end.isoformat()],
     }
 
@@ -299,9 +306,10 @@ _PRODUCTION_SPEC = {
     "type": "function",
     "function": {
         "name": "production",
-        "description": "Producción de un equipo en un período. Para comparar "
-                       "contra el plan ('producción vs plan', cumplimiento), usa "
-                       "además la herramienta 'cumplimiento'.",
+        "description": "Producción de un equipo en un período, en la unidad de "
+                       "medida del equipo. Para comparar contra el plan "
+                       "('producción vs plan', cumplimiento), usa además la "
+                       "herramienta 'cumplimiento'.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -310,12 +318,14 @@ _PRODUCTION_SPEC = {
                     "description": "ID del equipo; debe pertenecer a la planta.",
                 },
                 "period": _PERIOD_PROP,
-                "unit": {
+                "measure": {
                     "type": "string",
-                    "enum": ["units", "kp", "tons"],
-                    "description": "Unidad: 'units' (unidades), 'kp' (unidades "
-                                   "ponderadas por kp) o 'tons' (toneladas). "
-                                   "Por defecto 'kp'.",
+                    "enum": ["standard", "counter", "tons"],
+                    "description": "Medida de producción: 'standard' (producción "
+                                   "estándar, contador ponderado por el kp de la "
+                                   "especificación del producto — es lo normal), "
+                                   "'counter' (contador crudo sin kp) o 'tons' "
+                                   "(toneladas). Por defecto 'standard'.",
                 },
             },
             "required": ["devid", "period"],

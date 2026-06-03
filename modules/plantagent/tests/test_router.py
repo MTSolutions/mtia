@@ -96,6 +96,17 @@ def test_unknown_plant_returns_404(client, monkeypatch):
     assert r.status_code == 404
 
 
+def test_mtapi_unavailable_returns_503(client, monkeypatch):
+    def boom(*a, **k):
+        raise mtapi.MtapiError("mtapi2 unreachable")
+    monkeypatch.setattr(scope, "device_ids", boom)
+
+    r = client.post("/plantagent/chat",
+                    params={"client": "degasa", "plant_id": 7, "question": "OEE?"},
+                    headers={"Authorization": f"JWT {_token()}"})
+    assert r.status_code == 503
+
+
 def test_chat_streams_tool_token_done(client):
     r = client.post("/plantagent/chat",
                     params={"client": "degasa", "plant_id": 7, "question": "¿OEE del 1079 hoy?"},

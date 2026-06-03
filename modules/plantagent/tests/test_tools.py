@@ -185,34 +185,34 @@ def test_production_advertised():
     assert "production" in names
 
 
-@pytest.mark.parametrize("unit,fn", [
-    ("units", "prod_dev_t"),
-    ("kp", "prod_dev_kp"),
+@pytest.mark.parametrize("measure,fn", [
+    ("standard", "prod_dev_kp"),   # kp-weighted production (counter × product-spec kp)
+    ("counter", "prod_dev_t"),     # raw counter, no kp
     ("tons", "total_tons"),
 ])
-def test_production_unit_selects_right_mtapi_fn(unit, fn):
+def test_production_measure_selects_right_mtapi_fn(measure, fn):
     call = recording_call({fn: 1234})
     ctx = make_ctx(mtapi_call=call)
-    result = tools.dispatch("production", {"devid": 1079, "period": "hoy", "unit": unit}, ctx)
+    result = tools.dispatch("production", {"devid": 1079, "period": "hoy", "measure": measure}, ctx)
     assert result["produced"] == 1234
-    assert result["unit"] == unit
+    assert result["measure"] == measure
     assert call.calls[0][0] == fn
     assert call.calls[0][2][-1] == 1079
 
 
-def test_production_defaults_to_kp():
+def test_production_defaults_to_standard_kp_counter():
     call = recording_call({"prod_dev_kp": 500})
     ctx = make_ctx(mtapi_call=call)
     result = tools.dispatch("production", {"devid": 1079, "period": "hoy"}, ctx)
-    assert result["unit"] == "kp"
-    assert call.calls[0][0] == "prod_dev_kp"
+    assert result["measure"] == "standard"
+    assert call.calls[0][0] == "prod_dev_kp"     # canonical default counter
 
 
-def test_production_invalid_unit_raises():
+def test_production_invalid_measure_raises():
     call = recording_call({"prod_dev_t": 1})
     ctx = make_ctx(mtapi_call=call)
     with pytest.raises(tools.ToolError):
-        tools.dispatch("production", {"devid": 1079, "period": "hoy", "unit": "litros"}, ctx)
+        tools.dispatch("production", {"devid": 1079, "period": "hoy", "measure": "litros"}, ctx)
     assert call.calls == []
 
 
@@ -222,3 +222,33 @@ def test_production_out_of_scope_devid_raises():
     with pytest.raises(tools.ToolError):
         tools.dispatch("production", {"devid": 9999, "period": "hoy"}, ctx)
     assert call.calls == []
+
+
+# --- no-data flagging (T8) ----------------------------------------------------
+
+def test_indicator_none_value_flags_no_data():
+    call = recording_call({"oee": None})
+    ctx = make_ctx(mtapi_call=call)
+    r = tools.dispatch("oee", {"devid": 1079, "period": "hoy"}, ctx)
+    assert r["value"] is None and r["no_data"] is True
+
+
+def test_indicator_real_value_is_not_no_data():
+    call = recording_call({"oee": 0.0})       # 0.0 is real data, not "no data"
+    ctx = make_ctx(mtapi_call=call)
+    r = tools.dispatch("oee", {"devid": 1079, "period": "hoy"}, ctx)
+    assert r["no_data"] is False
+
+
+def test_rank_oee_empty_flags_no_data():
+    call = recording_call({"devtree": {"id": 7, "type": "plant", "devs": []}})
+    ctx = make_ctx(mtapi_call=call)
+    r = tools.dispatch("rank_oee", {"period": "hoy"}, ctx)
+    assert r["devices"] == [] and r["no_data"] is True
+
+
+def test_top_stops_empty_flags_no_data():
+    call = recording_call({"pareto": {"codstates": []}})
+    ctx = make_ctx(mtapi_call=call)
+    r = tools.dispatch("top_stops", {"period": "hoy"}, ctx)
+    assert r["stops"] == [] and r["no_data"] is True

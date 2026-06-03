@@ -49,31 +49,54 @@ async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]
         {"role": "user", "content": prompts.build_user_message(question, ctx)},
     ]
 
-    calls = 0
-    while calls < MAX_TOOL_CALLS:
-        msg = await llm.chat_tools(messages, tools.TOOL_SPECS)
-        tool_calls = msg.get("tool_calls") or []
-        if not tool_calls:
-            break
+    try:
+        calls = 0
+        hit_cap = False
+        while True:
+            if calls >= MAX_TOOL_CALLS:
+                hit_cap = True
+                break
+            msg = await llm.chat_tools(messages, tools.TOOL_SPECS)
+            tool_calls = msg.get("tool_calls") or []
+            if not tool_calls:
+                break
 
-        messages.append(_assistant_turn(msg))
-        for tc in tool_calls:
-            calls += 1
-            fn = tc.get("function") or {}
-            name = fn.get("name")
-            args = _coerce_args(fn.get("arguments"))
-            try:
-                result = tools.dispatch(name, args, ctx)
-                yield schemas.EVENT_TOOL, {
-                    "name": name, "args": args, "period": result.get("period")}
-            except tools.ToolError as e:
-                result = {"error": str(e)}
-                yield schemas.EVENT_TOOL, {"name": name, "args": args, "error": str(e)}
+            messages.append(_assistant_turn(msg))
+            for tc in tool_calls:
+                calls += 1
+                fn = tc.get("function") or {}
+                name = fn.get("name")
+                args = _coerce_args(fn.get("arguments"))
+                try:
+                    result = tools.dispatch(name, args, ctx)
+                    yield schemas.EVENT_TOOL, {
+                        "name": name, "args": args, "period": result.get("period")}
+                except tools.ToolError as e:
+                    result = {"error": str(e)}
+                    yield schemas.EVENT_TOOL, {"name": name, "args": args, "error": str(e)}
+                except Exception:  # unexpected — never crash the stream over one tool
+                    result = {"error": "error interno al ejecutar la herramienta"}
+                    yield schemas.EVENT_TOOL, {
+                        "name": name, "args": args, "error": "error interno"}
+                messages.append({
+                    "role": "tool", "tool_name": name,
+                    "content": json.dumps(result, default=str)})
+
+        if hit_cap:
             messages.append({
-                "role": "tool", "tool_name": name,
-                "content": json.dumps(result, default=str)})
+                "role": "system",
+                "content": "Se alcanzó el límite de consultas. Responde con la "
+                           "información disponible y aclara si quedó incompleta. "
+                           "No inventes cifras.",
+            })
 
-    # Final user-facing answer: streamed prose, no tools, no chain-of-thought.
-    async for token in llm.chat_stream(messages):
-        yield schemas.EVENT_TOKEN, {"text": token}
-    yield schemas.EVENT_DONE, {}
+        # Final user-facing answer: streamed prose, no tools, no chain-of-thought.
+        async for token in llm.chat_stream(messages):
+            yield schemas.EVENT_TOKEN, {"text": token}
+        yield schemas.EVENT_DONE, {}
+    except Exception:
+        # Any unhandled failure (e.g. LLM transport) ends as a clean SSE error,
+        # never a fabricated answer or a broken stream.
+        yield schemas.EVENT_ERROR, {
+            "message": "No se pudo completar la consulta. Inténtalo nuevamente."}
+        yield schemas.EVENT_DONE, {}

@@ -105,6 +105,35 @@ async def test_max_tool_calls_is_bounded(monkeypatch):
     assert [n for n, _ in events][-1] == "done"
 
 
+async def test_unexpected_tool_error_does_not_crash_stream(monkeypatch):
+    ctx, _ = make_ctx()
+    script_chat_tools(monkeypatch, [_oee_call(1079), {"content": "ok"}])
+    script_chat_stream(monkeypatch, ["respuesta"])
+
+    def boom(name, args, c):
+        raise RuntimeError("unexpected bug")
+
+    monkeypatch.setattr(agent.tools, "dispatch", boom)
+
+    events = await _collect("q", ctx)
+    names = [n for n, _ in events]
+    tool_payload = next(p for n, p in events if n == "tool")
+    assert "error" in tool_payload            # surfaced, not raised
+    assert names[-1] == "done"                # stream still completed
+
+
+async def test_fatal_llm_error_emits_error_event(monkeypatch):
+    ctx, _ = make_ctx()
+
+    async def boom(messages, tool_specs, model=None, options=None, think=True):
+        raise RuntimeError("llm down")
+
+    monkeypatch.setattr(agent.llm, "chat_tools", boom)
+
+    events = await _collect("q", ctx)
+    assert "error" in [n for n, _ in events]   # clean error event, no crash
+
+
 async def test_no_tool_call_just_streams(monkeypatch):
     ctx, mtapi_calls = make_ctx()
     script_chat_tools(monkeypatch, [{"content": "respuesta directa"}])
