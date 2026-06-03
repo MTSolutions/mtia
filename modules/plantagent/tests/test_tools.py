@@ -72,45 +72,41 @@ def test_unavailable_indicator_becomes_toolerror():
         tools.dispatch("cumplimiento", {"devid": 1079, "period": "hoy"}, ctx)
 
 
-# --- ranking via a single devtree call ---------------------------------------
+# --- ranking via per-device oee() (devtree[indicators] faults on sections) ----
 
-PLANT_TREE_WITH_OEE = {
-    "id": 7, "name": "Planta", "type": "plant",
-    "lines": [
-        {"id": 10, "name": "L1", "type": "line", "devs": [
-            {"id": 1079, "name": "Llenadora", "type": "dev", "oee": 0.82},
-            {"id": 1080, "name": "Etiquetadora", "type": "dev", "oee": 0.55},
-        ]},
-    ],
-    "sections": [],
-    "devs": [{"id": 1081, "name": "Encajonadora", "type": "dev", "oee": 0.73}],
-}
+def oee_by_dev(oee_map, names=None):
+    """Stub: oee() returns per-devid values; getdevs() returns id/name pairs."""
+    calls = []
+
+    def _call(fn, client, *args):
+        calls.append((fn, client, args))
+        if fn == "oee":
+            return oee_map.get(args[-1])
+        if fn == "getdevs":
+            return [{"id": d, "name": (names or {}).get(d)} for d in oee_map]
+        raise KeyError(fn)
+
+    _call.calls = calls  # type: ignore[attr-defined]
+    return _call
 
 
-def test_rank_oee_returns_worst_first_via_single_devtree_call():
-    call = recording_call({"devtree": PLANT_TREE_WITH_OEE})
-    ctx = make_ctx(mtapi_call=call)
+def test_rank_oee_returns_worst_first_from_per_device_calls():
+    call = oee_by_dev({1079: 0.82, 1080: 0.55, 1081: 0.73},
+                      names={1080: "Etiquetadora"})
+    ctx = make_ctx(device_ids=(1079, 1080, 1081), mtapi_call=call)
     result = tools.dispatch("rank_oee", {"period": "últimos 3 días"}, ctx)
 
-    # Exactly one mtapi call (devtree), not per-device fan-out.
-    assert len(call.calls) == 1
-    assert call.calls[0][0] == "devtree"
-    # devtree(client, start, end, 'plant', plant_id, ['oee'], flat)
-    assert call.calls[0][2][2] == "plant"
-    assert call.calls[0][2][4] == ["oee"]
-
+    # One oee() call per device (no faulting devtree-with-indicators).
+    assert [c[0] for c in call.calls].count("oee") == 3
     devices = result["devices"]
     # worst OEE first: 0.55 (1080) < 0.73 (1081) < 0.82 (1079)
     assert [d["devid"] for d in devices] == [1080, 1081, 1079]
     assert devices[0]["oee"] == 0.55
+    assert devices[0]["name"] == "Etiquetadora"
 
 
 def test_rank_oee_ignores_devs_without_oee():
-    tree = {"id": 7, "type": "plant", "devs": [
-        {"id": 1079, "type": "dev", "oee": 0.6},
-        {"id": 1080, "type": "dev", "oee": None},
-    ]}
-    call = recording_call({"devtree": tree})
+    call = oee_by_dev({1079: 0.6, 1080: None})
     ctx = make_ctx(device_ids=(1079, 1080), mtapi_call=call)
     result = tools.dispatch("rank_oee", {"period": "hoy"}, ctx)
     assert [d["devid"] for d in result["devices"]] == [1079]
@@ -241,8 +237,8 @@ def test_indicator_real_value_is_not_no_data():
 
 
 def test_rank_oee_empty_flags_no_data():
-    call = recording_call({"devtree": {"id": 7, "type": "plant", "devs": []}})
-    ctx = make_ctx(mtapi_call=call)
+    call = oee_by_dev({1079: None, 1080: None})       # no device has OEE data
+    ctx = make_ctx(device_ids=(1079, 1080), mtapi_call=call)
     r = tools.dispatch("rank_oee", {"period": "hoy"}, ctx)
     assert r["devices"] == [] and r["no_data"] is True
 

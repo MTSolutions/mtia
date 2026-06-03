@@ -109,28 +109,42 @@ def _iter_dev_nodes(node: dict) -> Iterator[dict]:
             yield from _iter_dev_nodes(child)
 
 
-def _tool_rank_oee(args: dict, ctx: ToolContext) -> dict:
-    """Rank the plant's devices by OEE (worst first) from a single devtree call.
+def _device_names(ctx: ToolContext) -> dict:
+    """Best-effort devid -> name map (for readable rankings). Never fatal."""
+    try:
+        devs = _call(ctx, "getdevs")
+        return {d["id"]: d.get("name") for d in devs if isinstance(d, dict)}
+    except Exception:  # names are cosmetic; never break the tool over them
+        return {}
 
-    devtree computes the official per-device OEE server-side; we only sort —
-    the model never does arithmetic.
+
+def _tool_rank_oee(args: dict, ctx: ToolContext) -> dict:
+    """Rank the plant's devices by OEE (worst first), via per-device oee() calls.
+
+    We deliberately do NOT use devtree(indicators=['oee']): mtapi2 computes a
+    section/plant indicator by passing a *list* of devids to oee(), which faults
+    (IndexError) for the default client. Scalar per-device oee() is reliable.
+    The model never does arithmetic — we only sort the official figures.
     """
     start, end = _resolve_period(args, ctx)
-    tree = _call(ctx, "devtree", start, end, "plant", ctx.plant_id, ["oee"], False)
-    in_scope = set(ctx.device_ids)
-    devs = [
-        n for n in _iter_dev_nodes(tree)
-        if n.get("oee") is not None and n.get("id") in in_scope
-    ]
-    devs.sort(key=lambda n: n["oee"])  # ascending: worst OEE first
+    scores: list[tuple[int, float]] = []
+    for devid in ctx.device_ids:
+        try:
+            value = _call(ctx, "oee", start, end, devid)
+        except ToolError:
+            value = None  # skip a device whose indicator errors; don't abort the rank
+        if value is not None:
+            scores.append((devid, value))
+
+    scores.sort(key=lambda t: t[1])  # ascending: worst OEE first
+    names = _device_names(ctx) if scores else {}
     return {
         "indicator": "oee",
         "ranking": "worst_first",
         "devices": [
-            {"devid": n["id"], "name": n.get("name"), "oee": n["oee"]}
-            for n in devs[:10]
+            {"devid": d, "name": names.get(d), "oee": v} for d, v in scores[:10]
         ],
-        "no_data": not devs,
+        "no_data": not scores,
         "period": [start.isoformat(), end.isoformat()],
     }
 
