@@ -114,3 +114,65 @@ def test_rank_oee_ignores_devs_without_oee():
     ctx = make_ctx(device_ids=(1079, 1080), mtapi_call=call)
     result = tools.dispatch("rank_oee", {"period": "hoy"}, ctx)
     assert [d["devid"] for d in result["devices"]] == [1079]
+
+
+# --- detenciones (top_stops via pareto) --------------------------------------
+
+PARETO = {"codstates": [
+    {"id": 1, "desc": "Falla mecánica", "code_f": "FM", "num": 12, "time_s": 4.5},
+    {"id": 2, "desc": "Cambio de formato", "code_f": "CF", "num": 3, "time_s": 8.0},
+]}
+
+PLANT_TREE_LINES = {
+    "id": 7, "name": "Planta", "type": "plant",
+    "lines": [
+        {"id": 10, "name": "Línea 1", "type": "line", "devs": [
+            {"id": 1079, "type": "dev"}]},
+        {"id": 11, "name": "Línea 2", "type": "line", "devs": [
+            {"id": 1080, "type": "dev"}, {"id": 1081, "type": "dev"}]},
+    ],
+    "sections": [], "devs": [],
+}
+
+
+def test_top_stops_advertised():
+    names = {t["function"]["name"] for t in tools.TOOL_SPECS}
+    assert "top_stops" in names
+
+
+def test_top_stops_plant_wide_by_time_is_default():
+    call = recording_call({"pareto": PARETO})
+    ctx = make_ctx(mtapi_call=call)
+    result = tools.dispatch("top_stops", {"period": "últimos 3 días"}, ctx)
+    assert result["scope"] == "planta"
+    # default by time -> Cambio de formato (8.0h) first
+    assert result["stops"][0]["desc"] == "Cambio de formato"
+    assert call.calls[0][0] == "pareto"
+
+
+def test_top_stops_by_count_orders_by_occurrences():
+    call = recording_call({"pareto": PARETO})
+    ctx = make_ctx(mtapi_call=call)
+    result = tools.dispatch("top_stops", {"period": "hoy", "by": "count"}, ctx)
+    # most-repeated -> Falla mecánica (12 occurrences) first
+    assert result["stops"][0]["desc"] == "Falla mecánica"
+    assert result["stops"][0]["count"] == 12
+
+
+def test_top_stops_line_scoped_resolves_devices_then_paretos():
+    call = recording_call({"devtree": PLANT_TREE_LINES, "pareto": PARETO})
+    ctx = make_ctx(device_ids=(1079, 1080, 1081), mtapi_call=call)
+    result = tools.dispatch("top_stops", {"period": "hoy", "line": "Línea 2", "by": "count"}, ctx)
+    assert result["scope"] == "Línea 2"
+    fns = [c[0] for c in call.calls]
+    assert fns == ["devtree", "pareto"]
+    # pareto called with only Línea 2's devices
+    assert call.calls[1][2][-1] == [1080, 1081]
+
+
+def test_top_stops_unknown_line_raises_with_available_names():
+    call = recording_call({"devtree": PLANT_TREE_LINES})
+    ctx = make_ctx(mtapi_call=call)
+    with pytest.raises(tools.ToolError) as ei:
+        tools.dispatch("top_stops", {"period": "hoy", "line": "Línea 9"}, ctx)
+    assert "Línea 2" in str(ei.value)  # lists available lines

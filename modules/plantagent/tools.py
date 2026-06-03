@@ -133,6 +133,75 @@ def _tool_rank_oee(args: dict, ctx: ToolContext) -> dict:
     }
 
 
+def _collect_line_nodes(node: dict) -> list[dict]:
+    """Depth-first collect every ``type == 'line'`` node in a (nested) devtree."""
+    out: list[dict] = []
+    if node.get("type") == "line":
+        out.append(node)
+    for child_key in ("plants", "lines", "sections", "devs"):
+        for child in node.get(child_key, []):
+            out.extend(_collect_line_nodes(child))
+    return out
+
+
+def _match_line(line_nodes: list[dict], name: str) -> dict | None:
+    target = (name or "").strip().lower()
+    for ln in line_nodes:                       # exact match first
+        if (ln.get("name") or "").strip().lower() == target:
+            return ln
+    for ln in line_nodes:                       # then contains
+        if target and target in (ln.get("name") or "").strip().lower():
+            return ln
+    return None
+
+
+def _tool_top_stops(args: dict, ctx: ToolContext) -> dict:
+    """Most significant stops in a period, by total time or by occurrence count.
+
+    Aggregation is mtapi2's official `pareto` (grouped by cod_state); we only
+    choose the sort key. Optionally scoped to a named line, resolved via devtree.
+    """
+    start, end = _resolve_period(args, ctx)
+    by = args.get("by") or "time"
+    line = args.get("line")
+
+    if line:
+        tree = _call(ctx, "devtree", start, end, "plant", ctx.plant_id, [], False)
+        line_nodes = _collect_line_nodes(tree)
+        match = _match_line(line_nodes, line)
+        if match is None:
+            names = [n.get("name") for n in line_nodes]
+            raise ToolError(
+                "no encontré la línea {!r}. Líneas disponibles: {}".format(line, names))
+        devids = [n["id"] for n in _iter_dev_nodes(match)]
+        scope_label = match.get("name") or line
+    else:
+        devids = list(ctx.device_ids)
+        scope_label = "planta"
+
+    if not devids:
+        raise ToolError("no hay equipos en el alcance indicado")
+
+    data = _call(ctx, "pareto", start, end, devids) or {}
+    rows = data.get("codstates", []) or []
+    sort_key = "num" if by == "count" else "time_s"
+    rows = sorted(rows, key=lambda r: r.get(sort_key) or 0, reverse=True)
+    return {
+        "scope": scope_label,
+        "by": by,
+        "stops": [
+            {
+                "desc": r.get("desc"),
+                "code_f": r.get("code_f"),
+                "count": r.get("num"),
+                "time_h": r.get("time_s"),
+            }
+            for r in rows[:10]
+        ],
+        "period": [start.isoformat(), end.isoformat()],
+    }
+
+
 def _indicator_spec(name: str, desc: str) -> dict:
     return {
         "type": "function",
@@ -170,13 +239,46 @@ _RANK_OEE_SPEC = {
     },
 }
 
+_TOP_STOPS_SPEC = {
+    "type": "function",
+    "function": {
+        "name": "top_stops",
+        "description": "Detenciones más importantes en un período, para toda la "
+                       "planta o una línea. Úsalo para '¿la detención más repetida?' "
+                       "o '¿la detención más larga?'.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "period": _PERIOD_PROP,
+                "by": {
+                    "type": "string",
+                    "enum": ["time", "count"],
+                    "description": "Ordenar por tiempo total ('time', detención más "
+                                   "larga) o por número de ocurrencias ('count', más "
+                                   "repetida).",
+                },
+                "line": {
+                    "type": "string",
+                    "description": "Nombre de la línea (opcional). Si se omite, "
+                                   "abarca toda la planta.",
+                },
+            },
+            "required": ["period"],
+        },
+    },
+}
+
 # Advertised to the LLM.
-TOOL_SPECS = [_indicator_spec(n, d) for n, d in _INDICATORS.items()] + [_RANK_OEE_SPEC]
+TOOL_SPECS = (
+    [_indicator_spec(n, d) for n, d in _INDICATORS.items()]
+    + [_RANK_OEE_SPEC, _TOP_STOPS_SPEC]
+)
 
 _DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
     name: _make_indicator_tool(name) for name in _INDICATORS
 }
 _DISPATCH["rank_oee"] = _tool_rank_oee
+_DISPATCH["top_stops"] = _tool_top_stops
 
 
 def dispatch(name: str, args: dict, ctx: ToolContext) -> dict:
