@@ -214,3 +214,111 @@ corriendo en el host. Los demás usan Qdrant real y Ollama stub.
 | Respuesta dice "No encontré información relevante"   | Normal si el corpus no cubre la pregunta. Ajustar threshold o agregar docs |
 | `gemma4:e4b` no responde bien en español técnico     | Probar `gemma4:26b` (ver tabla de modelos arriba) y reindexar no es necesario |
 | Embeddings muy lentos                                | Primera llamada a Ollama carga el modelo (cold start, ~5-10s). Tirar un `ollama run bge-m3` para pre-cargar |
+
+---
+
+## Módulo Plant Agent — Indicadores de planta por lenguaje natural
+
+Asistente conversacional que responde preguntas sobre los indicadores
+**oficiales** de una planta (OEE, disponibilidad, desempeño, calidad,
+detenciones, producción) en español. La clave: **el agente es la interfaz;
+mtapi2 es la fuente de verdad**. El LLM nunca calcula ni inventa cifras —
+elige qué función de mtapi2 llamar, con qué argumentos, y narra el resultado.
+
+### Arquitectura
+
+```
+frontend ──JWT── mtia (FastAPI) ──┬── LLM (Ollama/vLLM, in-environment)  ← elige herramienta
+   modules/plantagent             └── mtapi2 (XMLRPC :7777)              ← indicadores oficiales
+                                              └── webservice ORM → postgresdb
+```
+
+- **Tool-calling**, no text-to-SQL: cada herramienta envuelve una función de
+  mtapi2, valida los argumentos contra el alcance del request (el equipo debe
+  pertenecer a la planta) y ejecuta. Las comparaciones ("¿qué equipo afecta más
+  el OEE?") se calculan en código a partir de cifras oficiales, no por el modelo.
+- **Aislamiento**: el claim `client` del JWT se exige (igual que en `rag`) y el
+  `plant_id` se valida contra `getplants` del cliente.
+- **mtia no necesita GPU**: solo orquesta. El motor de inferencia (Ollama/vLLM)
+  es lo único que usa GPU; mtia lo alcanza por `OLLAMA_URL`/`LLM_URL`.
+
+### Endpoints
+
+Requieren `Authorization: JWT <token>` (mismo token que emite `api`).
+
+| Método | Ruta                                              | Uso                        |
+|--------|---------------------------------------------------|----------------------------|
+| GET    | `/plantagent/health`                              | salud del módulo           |
+| POST   | `/plantagent/chat?client=&plant_id=&question=`    | **SSE** stream de respuesta |
+
+Eventos SSE: `tool` (`{name, args, period}` — un evento por llamada a mtapi2,
+traza de auditoría de cada cifra), `token` (`{text}`), `done` (`{}`), `error`
+(`{message}`). Códigos: `401` sin/JWT inválido, `403` `client` no coincide,
+`404` `plant_id` ajeno al cliente, `503` mtapi2 no disponible.
+
+### Catálogo de herramientas (MVP)
+
+| Herramienta | mtapi2 | Para |
+|---|---|---|
+| `oee`, `disponibilidad`, `rendimiento`, `calidad`, `cumplimiento` | idem (por equipo) | indicador de un equipo en un período |
+| `rank_oee` | `oee` por equipo | "¿qué equipo afecta más el OEE?" (ranking en código, peor primero) |
+| `top_stops` | `pareto` | "¿detención más repetida/larga?" (por `count` o `time`, opcional por línea) |
+| `production` | `prod_dev_kp`/`prod_dev_t`/`total_tons` | producción (`measure`: `standard`=kp, `counter`, `tons`) |
+
+> `cumplimiento` es específico por cliente; si un cliente no lo implementa, la
+> herramienta responde "no disponible" en vez de fallar.
+> `kp` es un **multiplicador de la especificación del producto**, no una unidad;
+> la unidad de medida vive en `Device.unit`.
+
+### Variables de entorno
+
+| Var | Uso |
+|---|---|
+| `OLLAMA_URL` / `LLM_MODEL` | endpoint y modelo del LLM (compartido con RAG) |
+| `MTAPI2_URL` | XMLRPC de mtapi2 (default `http://mtapi2:7777/api/xmlrpc`) |
+| `JWT_SECRET` | mismo secreto que `api` (HS512) |
+| `PLANTAGENT_DEFAULT_TZ` | tz de la planta para resolver "hoy/ayer/…" (default `America/Santiago`; resolver por planta es un pendiente) |
+
+### Modelo: dev vs producción
+
+- **Dev (local)**: Ollama en el host. Para *plumbing* funciona con `gemma4:e4b`,
+  pero su tool-calling es débil. El modelo objetivo, **`gemma4:12b`**, aún no
+  está soportado por las versiones liberadas de Ollama (la familia unificada es
+  reciente) — su validación empírica se hace en el nodo GPU.
+- **Producción (in-environment)**: nodo GPU propio (Linode/on-prem) corriendo
+  `gemma4:12b` vía Ollama o vLLM. El backend LLM es OpenAI-compatible/
+  configurable, así que dev → GPU → fallback no cambian el código de mtia.
+
+### Ejemplos (las 3 preguntas canónicas)
+
+```bash
+TOKEN=...   # JWT con claim client
+BASE="http://localhost:8008/plantagent/chat"
+
+curl -N -H "Authorization: JWT $TOKEN" \
+  "$BASE?client=<cliente>&plant_id=<id>&question=¿qué%20equipo%20afecta%20más%20el%20OEE?"
+
+curl -N -H "Authorization: JWT $TOKEN" \
+  "$BASE?client=<cliente>&plant_id=<id>&question=¿cuál%20fue%20la%20detención%20más%20repetida%20en%20la%20Línea%202%20los%20últimos%203%20días?"
+
+curl -N -H "Authorization: JWT $TOKEN" \
+  "$BASE?client=<cliente>&plant_id=<id>&question=¿cuánto%20produjo%20el%20equipo%20<devid>%20hoy?"
+```
+
+### Tests
+
+```bash
+docker compose exec mtia python -m pytest modules/plantagent/tests/
+```
+
+Los tests stubean **mtapi2 y el LLM** (sin red): periodos, scope, catálogo de
+herramientas, loop de tool-calling, auth y forma del SSE.
+
+### Problemas frecuentes
+
+| Síntoma | Causa / solución |
+|---|---|
+| `ollama pull gemma4:12b` → `412 requires a newer version` | El 12B unificado aún no está en Ollama liberado. Usar el nodo GPU (vLLM) o esperar a que la app oficial auto-actualice. |
+| `llama-server binary not found` en macOS | La **fórmula** de Homebrew `ollama` viene incompleta. Usar la **app oficial** (`brew install --cask ollama-app` o ollama.com), no la fórmula. |
+| `503` en `/plantagent/chat` | mtapi2 no responde. Verificar el contenedor `mtapi2`. |
+| Respuestas con tool-calling poco fiables en dev | `gemma4:e4b` es débil para tool-calling; validar con `gemma4:12b` en GPU. |
