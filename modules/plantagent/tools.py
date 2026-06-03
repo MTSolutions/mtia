@@ -226,6 +226,50 @@ def _tool_rank_downtime(args: dict, ctx: ToolContext) -> dict:
     }
 
 
+def _tool_sabana(args: dict, ctx: ToolContext) -> dict:
+    """Sabana detail (state intervals with production) for a node + period.
+
+    The raw sabana can be hundreds of rows, so we summarize: totals, production
+    by product, and a capped sample of rows. Backed by mtapi2.sabana (the
+    SabanaRows are precomputed).
+    """
+    if args.get("node") or args.get("device"):
+        label, ntype, dev_ids = _resolve_node(args, ctx)
+    else:
+        dev_ids = list(ctx.device_ids)
+        label, ntype = ctx.plant_name or "planta", "plant"
+    start, end = _resolve_period(args, ctx)
+
+    rows = _call(ctx, "sabana", start, end, dev_ids) or []
+    by_product: dict = {}
+    for r in rows:
+        prod = r.get("product") or r.get("sku") or "?"
+        by_product[prod] = by_product.get(prod, 0) + (r.get("production") or 0)
+    products = sorted(
+        ({"product": k, "production": v} for k, v in by_product.items()),
+        key=lambda d: d["production"], reverse=True)[:10]
+    sample = [
+        {
+            "start": r.get("start"), "end": r.get("end"),
+            "duration_min": r.get("duration"), "production": r.get("production"),
+            "product": r.get("product"), "stop": r.get("code_description") or None,
+        }
+        for r in rows[:25]
+    ]
+    return {
+        "node": label,
+        "type": ntype,
+        "n_rows": len(rows),
+        "total_production": sum((r.get("production") or 0) for r in rows),
+        "total_duration_min": round(sum((r.get("duration") or 0) for r in rows), 1),
+        "by_product": products,
+        "rows_sample": sample,
+        "truncated": len(rows) > 25,
+        "no_data": not rows,
+        "period": [start.isoformat(), end.isoformat()],
+    }
+
+
 def _tool_top_stops(args: dict, ctx: ToolContext) -> dict:
     """Most significant stops in a period, by total time or by occurrence count.
 
@@ -484,11 +528,35 @@ _RANK_DOWNTIME_SPEC = {
     },
 }
 
+_SABANA_SPEC = {
+    "type": "function",
+    "function": {
+        "name": "sabana",
+        "description": "Detalle de la sábana de un nodo en un período: corridas e "
+                       "intervalos de estado con su producción. Devuelve totales, "
+                       "producción por producto y una muestra de filas (inicio/fin, "
+                       "duración, producción, detención). Úsalo para preguntas de "
+                       "detalle por intervalo/corrida u órdenes.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "node": {
+                    "type": "string",
+                    "description": "Nombre de equipo/línea/sección (opcional; por "
+                                   "defecto toda la planta).",
+                },
+                "period": _PERIOD_PROP,
+            },
+            "required": ["period"],
+        },
+    },
+}
+
 # Advertised to the LLM.
 TOOL_SPECS = (
     [_indicator_spec(n, d) for n, d in _INDICATORS.items()]
     + [_RANK_OEE_SPEC, _TOP_STOPS_SPEC, _PRODUCTION_SPEC, _DAILY_OEE_SPEC,
-       _RANK_DOWNTIME_SPEC]
+       _RANK_DOWNTIME_SPEC, _SABANA_SPEC]
 )
 
 _DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
@@ -499,6 +567,7 @@ _DISPATCH["top_stops"] = _tool_top_stops
 _DISPATCH["production"] = _tool_production
 _DISPATCH["daily_oee"] = _tool_daily_oee
 _DISPATCH["rank_downtime"] = _tool_rank_downtime
+_DISPATCH["sabana"] = _tool_sabana
 
 
 def dispatch(name: str, args: dict, ctx: ToolContext) -> dict:

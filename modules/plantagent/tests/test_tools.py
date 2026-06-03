@@ -314,6 +314,36 @@ def test_rank_downtime_advertised():
     assert "rank_downtime" in {t["function"]["name"] for t in tools.TOOL_SPECS}
 
 
+# --- sabana detail ------------------------------------------------------------
+
+def test_sabana_summarizes_rows_by_product():
+    sabana_rows = [
+        {"start": "t0", "end": "t1", "duration": 60.0, "production": 100,
+         "product": "A", "code_description": ""},
+        {"start": "t1", "end": "t2", "duration": 30.0, "production": 50,
+         "product": "A", "code_description": ""},
+        {"start": "t2", "end": "t3", "duration": 15.0, "production": 0,
+         "product": "B", "code_description": "Falla"},
+    ]
+
+    def call(fn, client, start, end, dev_ids):
+        assert fn == "sabana"
+        return sabana_rows
+
+    ctx = make_ctx(devices=[{"id": 1, "name": "A"}], mtapi_call=call)
+    r = tools.dispatch("sabana", {"node": "A", "period": "ayer"}, ctx)
+    assert r["n_rows"] == 3
+    assert r["total_production"] == 150
+    assert r["total_duration_min"] == 105.0
+    assert r["by_product"][0] == {"product": "A", "production": 150}   # top product
+    assert len(r["rows_sample"]) == 3
+    assert r["rows_sample"][2]["stop"] == "Falla"
+
+
+def test_sabana_advertised():
+    assert "sabana" in {t["function"]["name"] for t in tools.TOOL_SPECS}
+
+
 # --- no-data flagging (T8) ----------------------------------------------------
 
 def test_indicator_none_value_flags_no_data():
