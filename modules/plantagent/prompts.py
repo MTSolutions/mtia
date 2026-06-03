@@ -16,6 +16,8 @@ SYSTEM_PROMPT = (
     "- Para preguntas comparativas ('qué equipo afecta más el OEE', 'el peor "
     "equipo'), usa la herramienta de clasificación (rank_oee) en vez de pedir "
     "el indicador equipo por equipo.\n"
+    "- Para 'producción vs plan' combina la herramienta de producción con la de "
+    "cumplimiento. La atraso/desviación por orden no está disponible aún.\n"
     "- Responde en español neutro (sin voseo), de forma breve y precisa, "
     "indicando el equipo y el período consultado.\n"
 )

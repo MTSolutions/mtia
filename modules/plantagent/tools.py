@@ -202,6 +202,33 @@ def _tool_top_stops(args: dict, ctx: ToolContext) -> dict:
     }
 
 
+# Production unit -> mtapi2 function. Note: we never pass an extra `unit` arg to
+# mtapi2 (default prod_dev_kp takes only start/end/devid) — the choice is which
+# function to call.
+_PROD_FN = {
+    "units": "prod_dev_t",     # raw units
+    "kp": "prod_dev_kp",       # kp-weighted units
+    "tons": "total_tons",      # tonnage
+}
+
+
+def _tool_production(args: dict, ctx: ToolContext) -> dict:
+    devid = _resolve_devid(args, ctx)
+    unit = args.get("unit") or "kp"
+    fn = _PROD_FN.get(unit)
+    if fn is None:
+        raise ToolError(
+            "unidad inválida: {!r} (usa 'units', 'kp' o 'tons')".format(unit))
+    start, end = _resolve_period(args, ctx)
+    produced = _call(ctx, fn, start, end, devid)
+    return {
+        "devid": devid,
+        "unit": unit,
+        "produced": produced,
+        "period": [start.isoformat(), end.isoformat()],
+    }
+
+
 def _indicator_spec(name: str, desc: str) -> dict:
     return {
         "type": "function",
@@ -268,10 +295,38 @@ _TOP_STOPS_SPEC = {
     },
 }
 
+_PRODUCTION_SPEC = {
+    "type": "function",
+    "function": {
+        "name": "production",
+        "description": "Producción de un equipo en un período. Para comparar "
+                       "contra el plan ('producción vs plan', cumplimiento), usa "
+                       "además la herramienta 'cumplimiento'.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "devid": {
+                    "type": "integer",
+                    "description": "ID del equipo; debe pertenecer a la planta.",
+                },
+                "period": _PERIOD_PROP,
+                "unit": {
+                    "type": "string",
+                    "enum": ["units", "kp", "tons"],
+                    "description": "Unidad: 'units' (unidades), 'kp' (unidades "
+                                   "ponderadas por kp) o 'tons' (toneladas). "
+                                   "Por defecto 'kp'.",
+                },
+            },
+            "required": ["devid", "period"],
+        },
+    },
+}
+
 # Advertised to the LLM.
 TOOL_SPECS = (
     [_indicator_spec(n, d) for n, d in _INDICATORS.items()]
-    + [_RANK_OEE_SPEC, _TOP_STOPS_SPEC]
+    + [_RANK_OEE_SPEC, _TOP_STOPS_SPEC, _PRODUCTION_SPEC]
 )
 
 _DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
@@ -279,6 +334,7 @@ _DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
 }
 _DISPATCH["rank_oee"] = _tool_rank_oee
 _DISPATCH["top_stops"] = _tool_top_stops
+_DISPATCH["production"] = _tool_production
 
 
 def dispatch(name: str, args: dict, ctx: ToolContext) -> dict:

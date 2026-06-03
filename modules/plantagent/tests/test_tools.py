@@ -176,3 +176,49 @@ def test_top_stops_unknown_line_raises_with_available_names():
     with pytest.raises(tools.ToolError) as ei:
         tools.dispatch("top_stops", {"period": "hoy", "line": "Línea 9"}, ctx)
     assert "Línea 2" in str(ei.value)  # lists available lines
+
+
+# --- producción --------------------------------------------------------------
+
+def test_production_advertised():
+    names = {t["function"]["name"] for t in tools.TOOL_SPECS}
+    assert "production" in names
+
+
+@pytest.mark.parametrize("unit,fn", [
+    ("units", "prod_dev_t"),
+    ("kp", "prod_dev_kp"),
+    ("tons", "total_tons"),
+])
+def test_production_unit_selects_right_mtapi_fn(unit, fn):
+    call = recording_call({fn: 1234})
+    ctx = make_ctx(mtapi_call=call)
+    result = tools.dispatch("production", {"devid": 1079, "period": "hoy", "unit": unit}, ctx)
+    assert result["produced"] == 1234
+    assert result["unit"] == unit
+    assert call.calls[0][0] == fn
+    assert call.calls[0][2][-1] == 1079
+
+
+def test_production_defaults_to_kp():
+    call = recording_call({"prod_dev_kp": 500})
+    ctx = make_ctx(mtapi_call=call)
+    result = tools.dispatch("production", {"devid": 1079, "period": "hoy"}, ctx)
+    assert result["unit"] == "kp"
+    assert call.calls[0][0] == "prod_dev_kp"
+
+
+def test_production_invalid_unit_raises():
+    call = recording_call({"prod_dev_t": 1})
+    ctx = make_ctx(mtapi_call=call)
+    with pytest.raises(tools.ToolError):
+        tools.dispatch("production", {"devid": 1079, "period": "hoy", "unit": "litros"}, ctx)
+    assert call.calls == []
+
+
+def test_production_out_of_scope_devid_raises():
+    call = recording_call({"prod_dev_kp": 1})
+    ctx = make_ctx(device_ids=(1079,), mtapi_call=call)
+    with pytest.raises(tools.ToolError):
+        tools.dispatch("production", {"devid": 9999, "period": "hoy"}, ctx)
+    assert call.calls == []
