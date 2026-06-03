@@ -30,7 +30,7 @@ stopreason = "modules.stopreason.pipeline:cli"
 
 [tool.setuptools]
 py-modules = ["api"]
-packages = ["modules", "modules.stopreason", "modules.rag"]
+packages = ["modules", "modules.stopreason", "modules.rag", "modules.plantagent"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
