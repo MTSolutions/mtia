@@ -13,10 +13,10 @@ in code from official per-device figures, not by the model.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
-from typing import Callable, Iterator
+from dataclasses import dataclass, field
+from typing import Callable
 
-from modules.plantagent import mtapi, periods
+from modules.plantagent import mtapi, periods, scope
 
 
 class ToolError(ValueError):
@@ -36,6 +36,7 @@ class ToolContext:
     now: dt.datetime          # timezone-aware reference instant
     tz: str                   # IANA timezone of the plant
     plant_name: str | None = None
+    tree: dict = field(default_factory=dict)   # named config tree (devtree_named)
     # Resolved to mtapi.call at call time when None, so it stays patchable and
     # tests can inject a stub.
     mtapi_call: Callable | None = None
@@ -103,20 +104,30 @@ def _call(ctx: ToolContext, fn: str, *args):
         raise ToolError(str(e))
 
 
-def _resolve_device(args: dict, ctx: ToolContext) -> int:
-    """Resolve the 'device' (name or id) argument to a devid within the plant.
+def _resolve_node(args: dict, ctx: ToolContext) -> tuple[str, str, list[int]]:
+    """Resolve a 'node' (equipment/line/section/plant, by name or id) to its
+    device-id list. Returns (label, type, dev_ids).
 
-    Accepts the legacy 'devid' key too. Raises ToolError listing available
-    equipment names when the reference can't be matched.
+    Uses the named tree (any node type) when available; otherwise falls back to
+    the flat device list (device-only). Raises ToolError when unresolved or the
+    node has no equipment.
     """
-    ref = args.get("device", args.get("devid"))
-    devid = ctx.resolve_device(ref)
-    if devid is None:
-        names = [d.get("name") for d in ctx.devices][:30]
-        raise ToolError(
-            "no encontré el equipo {!r} en la planta. Equipos disponibles: {}".format(
-                ref, names))
-    return devid
+    ref = args.get("node", args.get("device", args.get("devid")))
+    node = scope.resolve_node(ctx.tree, ref) if ctx.tree else None
+    if node is not None:
+        dev_ids = scope.node_device_ids(node)
+        label, ntype = node.get("name"), node.get("type")
+    else:
+        devid = ctx.resolve_device(ref)
+        if devid is None:
+            opts = [n.get("name") for n in (scope.nodes_in(ctx.tree) if ctx.tree
+                                            else ctx.devices)][:40]
+            raise ToolError(
+                "no encontré '{}' en la planta. Disponibles: {}".format(ref, opts))
+        dev_ids, label, ntype = [devid], ctx.name_for(devid), "dev"
+    if not dev_ids:
+        raise ToolError("'{}' no tiene equipos con datos".format(label))
+    return label, ntype, dev_ids
 
 
 def _resolve_period(args: dict, ctx: ToolContext) -> tuple[dt.datetime, dt.datetime]:
@@ -129,27 +140,22 @@ def _resolve_period(args: dict, ctx: ToolContext) -> tuple[dt.datetime, dt.datet
 
 def _make_indicator_tool(fn_name: str) -> Callable[[dict, ToolContext], dict]:
     def _tool(args: dict, ctx: ToolContext) -> dict:
-        devid = _resolve_device(args, ctx)
+        label, ntype, dev_ids = _resolve_node(args, ctx)
         start, end = _resolve_period(args, ctx)
-        value = _call(ctx, fn_name, start, end, devid)
+        # mtapi2 indicators aggregate a device list (disp/desemp/calidad iterate);
+        # a single device is sent as a scalar (identical result, simpler call).
+        arg = dev_ids[0] if len(dev_ids) == 1 else dev_ids
+        value = _call(ctx, fn_name, start, end, arg)
         return {
             "indicator": fn_name,
-            "devid": devid,
-            "device": ctx.name_for(devid),
+            "node": label,
+            "type": ntype,
+            "devids": dev_ids,
             "value": value,
             "no_data": value is None,
             "period": [start.isoformat(), end.isoformat()],
         }
     return _tool
-
-
-def _iter_dev_nodes(node: dict) -> Iterator[dict]:
-    """Depth-first yield of every ``type == 'dev'`` node in a (nested) devtree."""
-    if node.get("type") == "dev":
-        yield node
-    for child_key in ("plants", "lines", "sections", "devs"):
-        for child in node.get(child_key, []):
-            yield from _iter_dev_nodes(child)
 
 
 def _tool_rank_oee(args: dict, ctx: ToolContext) -> dict:
@@ -182,28 +188,6 @@ def _tool_rank_oee(args: dict, ctx: ToolContext) -> dict:
     }
 
 
-def _collect_line_nodes(node: dict) -> list[dict]:
-    """Depth-first collect every ``type == 'line'`` node in a (nested) devtree."""
-    out: list[dict] = []
-    if node.get("type") == "line":
-        out.append(node)
-    for child_key in ("plants", "lines", "sections", "devs"):
-        for child in node.get(child_key, []):
-            out.extend(_collect_line_nodes(child))
-    return out
-
-
-def _match_line(line_nodes: list[dict], name: str) -> dict | None:
-    target = (name or "").strip().lower()
-    for ln in line_nodes:                       # exact match first
-        if (ln.get("name") or "").strip().lower() == target:
-            return ln
-    for ln in line_nodes:                       # then contains
-        if target and target in (ln.get("name") or "").strip().lower():
-            return ln
-    return None
-
-
 def _tool_top_stops(args: dict, ctx: ToolContext) -> dict:
     """Most significant stops in a period, by total time or by occurrence count.
 
@@ -212,21 +196,20 @@ def _tool_top_stops(args: dict, ctx: ToolContext) -> dict:
     """
     start, end = _resolve_period(args, ctx)
     by = args.get("by") or "time"
-    line = args.get("line")
+    node_ref = args.get("node") or args.get("line")
 
-    if line:
-        tree = _call(ctx, "devtree_named", "plant", ctx.plant_id)
-        line_nodes = _collect_line_nodes(tree)
-        match = _match_line(line_nodes, line)
-        if match is None:
-            names = [n.get("name") for n in line_nodes]
+    if node_ref:
+        tree = ctx.tree or _call(ctx, "devtree_named", "plant", ctx.plant_id)
+        node = scope.resolve_node(tree, node_ref)
+        if node is None:
+            names = [n.get("name") for n in scope.nodes_in(tree)]
             raise ToolError(
-                "no encontré la línea {!r}. Líneas disponibles: {}".format(line, names))
-        devids = [n["id"] for n in _iter_dev_nodes(match)]
-        scope_label = match.get("name") or line
+                "no encontré '{}'. Disponibles: {}".format(node_ref, names))
+        devids = scope.node_device_ids(node)
+        scope_label = node.get("name") or str(node_ref)
     else:
         devids = list(ctx.device_ids)
-        scope_label = "planta"
+        scope_label = ctx.plant_name or "planta"
 
     if not devids:
         raise ToolError("no hay equipos en el alcance indicado")
@@ -264,22 +247,29 @@ _PROD_MEASURE_FN = {
 
 
 def _tool_production(args: dict, ctx: ToolContext) -> dict:
-    devid = _resolve_device(args, ctx)
+    label, ntype, dev_ids = _resolve_node(args, ctx)
     measure = args.get("measure") or "standard"
     fn = _PROD_MEASURE_FN.get(measure)
     if fn is None:
         raise ToolError(
             "medida inválida: {!r} (usa 'standard', 'counter' o 'tons')".format(measure))
     start, end = _resolve_period(args, ctx)
-    produced = _call(ctx, fn, start, end, devid)
+    # prod_* are per-device; production is additive, so sum across the node's
+    # devices. Unit of measure comes from Device.unit (device_meta) — caller
+    # should not mix units; for the MVP we sum.
+    total, any_data = 0, False
+    for devid in dev_ids:
+        v = _call(ctx, fn, start, end, devid)
+        if v is not None:
+            total += v
+            any_data = True
     return {
-        "devid": devid,
-        "device": ctx.name_for(devid),
+        "node": label,
+        "type": ntype,
+        "devids": dev_ids,
         "measure": measure,
-        "produced": produced,
-        # The numeric unit of measure belongs to the device (Device.unit);
-        # reporting that label is a follow-up (no mtapi2 getter yet).
-        "no_data": produced is None,
+        "produced": total if any_data else None,
+        "no_data": not any_data,
         "period": [start.isoformat(), end.isoformat()],
     }
 
@@ -294,13 +284,15 @@ def _indicator_spec(name: str, desc: str) -> dict:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "device": {
+                    "node": {
                         "type": "string",
-                        "description": "Nombre del equipo (o su id) dentro de la planta.",
+                        "description": "Nombre de un equipo, línea, sección o planta. "
+                                       "Para líneas/secciones/plantas el indicador "
+                                       "agrega sus equipos.",
                     },
                     "period": _PERIOD_PROP,
                 },
-                "required": ["device", "period"],
+                "required": ["node", "period"],
             },
         },
     }
@@ -326,8 +318,8 @@ _TOP_STOPS_SPEC = {
     "function": {
         "name": "top_stops",
         "description": "Detenciones más importantes en un período, para toda la "
-                       "planta o una línea. Úsalo para '¿la detención más repetida?' "
-                       "o '¿la detención más larga?'.",
+                       "planta o un nodo (equipo/línea/sección). Úsalo para "
+                       "'¿la detención más repetida?' o '¿la más larga?'.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -339,10 +331,10 @@ _TOP_STOPS_SPEC = {
                                    "larga) o por número de ocurrencias ('count', más "
                                    "repetida).",
                 },
-                "line": {
+                "node": {
                     "type": "string",
-                    "description": "Nombre de la línea (opcional). Si se omite, "
-                                   "abarca toda la planta.",
+                    "description": "Nombre de equipo/línea/sección (opcional). Si se "
+                                   "omite, abarca toda la planta.",
                 },
             },
             "required": ["period"],
@@ -361,9 +353,10 @@ _PRODUCTION_SPEC = {
         "parameters": {
             "type": "object",
             "properties": {
-                "device": {
+                "node": {
                     "type": "string",
-                    "description": "Nombre del equipo (o su id) dentro de la planta.",
+                    "description": "Nombre de equipo/línea/sección/planta (se suma "
+                                   "la producción de sus equipos).",
                 },
                 "period": _PERIOD_PROP,
                 "measure": {
@@ -376,7 +369,7 @@ _PRODUCTION_SPEC = {
                                    "(toneladas). Por defecto 'standard'.",
                 },
             },
-            "required": ["device", "period"],
+            "required": ["node", "period"],
         },
     },
 }

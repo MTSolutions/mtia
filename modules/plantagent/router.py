@@ -54,6 +54,7 @@ async def chat(
         now=dt.datetime.now(dt.timezone.utc),
         tz=DEFAULT_TZ,
         plant_name=tree.get("name") or plant.get("name"),
+        tree=tree,
     )
 
     async def event_stream() -> AsyncIterator[dict]:

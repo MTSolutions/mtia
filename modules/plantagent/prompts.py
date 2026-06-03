@@ -1,6 +1,7 @@
 """System prompt and message construction for the Plant Agent loop."""
 from __future__ import annotations
 
+from modules.plantagent import scope
 from modules.plantagent.tools import ToolContext
 
 
@@ -24,14 +25,25 @@ SYSTEM_PROMPT = (
 
 
 def build_user_message(question: str, ctx: ToolContext) -> str:
-    """Frame the question with the named device scope and reference time."""
-    devs = "; ".join(
-        "{} (id {})".format(d.get("name") or "?", d["id"]) for d in ctx.devices[:50])
-    more = "" if len(ctx.devices) <= 50 else " (y más)"
+    """Frame the question with the named topology (equipment/lines/sections)."""
+    nodes = scope.nodes_in(ctx.tree) if ctx.tree else [
+        {"type": "dev", "name": d.get("name")} for d in ctx.devices]
+    by_type: dict = {}
+    for n in nodes:
+        if n.get("name"):
+            by_type.setdefault(n.get("type"), []).append(n["name"])
+
+    def fmt(node_type: str, label: str) -> str:
+        names = by_type.get(node_type, [])
+        return "{}: {}".format(label, ", ".join(names[:50])) if names else ""
+
+    parts = [p for p in (fmt("dev", "Equipos"),
+                         fmt("line", "Líneas"),
+                         fmt("section", "Secciones")) if p]
     plant = ctx.plant_name or "planta {}".format(ctx.plant_id)
     return (
         "Pregunta: {q}\n\n"
-        "Contexto: {plant}. Equipos disponibles: {devs}{more}.\n"
-        "Refiérete a los equipos por su nombre. "
+        "Contexto: {plant}. {parts}.\n"
+        "Refiérete a equipos, líneas, secciones o la planta por su nombre. "
         "Fecha/hora de referencia: {now}."
-    ).format(q=question, plant=plant, devs=devs, more=more, now=ctx.now.isoformat())
+    ).format(q=question, plant=plant, parts="; ".join(parts), now=ctx.now.isoformat())

@@ -12,13 +12,14 @@ UTC = dt.timezone.utc
 NOW = dt.datetime(2026, 6, 3, 12, 0, tzinfo=UTC)
 
 
-def make_ctx(device_ids=(1079, 1080, 1081), mtapi_call=None, names=None, devices=None):
+def make_ctx(device_ids=(1079, 1080, 1081), mtapi_call=None, names=None,
+             devices=None, tree=None):
     if devices is None:
         names = names or {}
         devices = [{"id": d, "name": names.get(d)} for d in device_ids]
     return ToolContext(
         client="degasa", plant_id=7, devices=devices,
-        now=NOW, tz="America/Santiago", mtapi_call=mtapi_call,
+        now=NOW, tz="America/Santiago", mtapi_call=mtapi_call, tree=tree or {},
     )
 
 
@@ -228,26 +229,45 @@ def test_production_out_of_scope_devid_raises():
 def test_indicator_accepts_device_by_name():
     call = recording_call({"oee": 0.9})
     ctx = make_ctx(devices=[{"id": 1500, "name": "Inyectoras de bases"}], mtapi_call=call)
-    r = tools.dispatch("oee", {"device": "Inyectoras de bases", "period": "hoy"}, ctx)
-    assert r["devid"] == 1500
-    assert r["device"] == "Inyectoras de bases"     # result labelled by name
-    assert call.calls[0][2][-1] == 1500             # mtapi called with the id
+    r = tools.dispatch("oee", {"node": "Inyectoras de bases", "period": "hoy"}, ctx)
+    assert r["devids"] == [1500]
+    assert r["node"] == "Inyectoras de bases"        # result labelled by name
+    assert r["type"] == "dev"
+    assert call.calls[0][2][-1] == 1500              # single device -> scalar
 
 
 def test_device_name_match_is_case_insensitive_and_partial():
     call = recording_call({"oee": 0.9})
     ctx = make_ctx(devices=[{"id": 1500, "name": "Inyectoras de bases"}], mtapi_call=call)
-    r = tools.dispatch("oee", {"device": "inyectoras", "period": "hoy"}, ctx)
-    assert r["devid"] == 1500
+    r = tools.dispatch("oee", {"node": "inyectoras", "period": "hoy"}, ctx)
+    assert r["devids"] == [1500]
 
 
-def test_unknown_device_name_raises_listing_options():
+def test_unknown_node_raises_listing_options():
     call = recording_call({"oee": 0.9})
     ctx = make_ctx(devices=[{"id": 1500, "name": "Inyectoras de bases"}], mtapi_call=call)
     with pytest.raises(tools.ToolError) as ei:
-        tools.dispatch("oee", {"device": "Robot soldador", "period": "hoy"}, ctx)
+        tools.dispatch("oee", {"node": "Robot soldador", "period": "hoy"}, ctx)
     assert "Inyectoras de bases" in str(ei.value)
     assert call.calls == []
+
+
+SECTION_TREE = {
+    "id": 7, "name": "Planta", "type": "plant", "lines": [], "devs": [],
+    "sections": [{"id": 20, "name": "Químicos", "type": "section", "devs": [
+        {"id": 1, "name": "A", "type": "dev"}, {"id": 2, "name": "B", "type": "dev"}]}],
+}
+
+
+def test_indicator_for_a_section_aggregates_its_devices():
+    call = recording_call({"oee": 0.5})
+    ctx = make_ctx(devices=[{"id": 1, "name": "A"}, {"id": 2, "name": "B"}],
+                   tree=SECTION_TREE, mtapi_call=call)
+    r = tools.dispatch("oee", {"node": "Químicos", "period": "hoy"}, ctx)
+    assert r["type"] == "section"
+    assert r["node"] == "Químicos"
+    assert r["devids"] == [1, 2]
+    assert call.calls[0][2][-1] == [1, 2]            # oee called with the device LIST
 
 
 # --- no-data flagging (T8) ----------------------------------------------------

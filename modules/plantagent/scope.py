@@ -83,3 +83,47 @@ def devices_in(tree: dict) -> list[dict]:
     acc: list[dict] = []
     _collect_named_devs(tree, acc)
     return acc
+
+
+def _collect_all_nodes(node: dict, acc: list[dict]) -> None:
+    if node.get("type") and node.get("id") is not None:
+        acc.append(node)
+    for child_key in ("plants", "lines", "sections", "devs"):
+        for child in node.get(child_key, []):
+            _collect_all_nodes(child, acc)
+
+
+def nodes_in(tree: dict) -> list[dict]:
+    """Every node (plant/line/section/dev) in a named tree, flat."""
+    acc: list[dict] = []
+    _collect_all_nodes(tree, acc)
+    return acc
+
+
+def resolve_node(tree: dict, ref) -> dict | None:
+    """Resolve a reference (id, numeric string, or name) to a tree node.
+
+    Matches across ALL node types (device/line/section/plant). Names match
+    case-insensitively, exact first then substring. Returns the node subtree
+    (so the caller can read its devices via devices_in), or None.
+    """
+    if ref is None:
+        return None
+    nodes = nodes_in(tree)
+    s = str(ref).strip()
+    if s.lstrip("-").isdigit():
+        nid = int(s)
+        return next((n for n in nodes if n["id"] == nid), None)
+    low = s.lower()
+    for n in nodes:
+        if (n.get("name") or "").strip().lower() == low:
+            return n
+    for n in nodes:
+        if low and low in (n.get("name") or "").strip().lower():
+            return n
+    return None
+
+
+def node_device_ids(node: dict) -> list[int]:
+    """Device ids under a resolved node (a device node returns just itself)."""
+    return [d["id"] for d in devices_in(node)]
