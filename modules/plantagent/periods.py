@@ -67,10 +67,41 @@ def resolve(phrase: str, now: dt.datetime, tz: str) -> tuple[dt.datetime, dt.dat
             raise PeriodError("number of days must be positive: {!r}".format(phrase))
         return _to_utc_naive(now - dt.timedelta(days=n)), now_utc
 
-    if p in ("esta semana", "semana"):
+    if p in ("esta semana", "este semana", "semana", "la semana"):
         start = today - dt.timedelta(days=today.weekday())  # Monday
         return _to_utc_naive(start), now_utc
-    if p in ("este mes", "mes"):
+    if p in ("semana pasada", "la semana pasada", "ultima semana", "última semana"):
+        this_monday = today - dt.timedelta(days=today.weekday())
+        return (_to_utc_naive(this_monday - dt.timedelta(days=7)),
+                _to_utc_naive(this_monday))
+    if p in ("este mes", "esta mes", "mes", "el mes"):
         return _to_utc_naive(today.replace(day=1)), now_utc
+    if p in ("mes pasado", "el mes pasado", "ultimo mes", "último mes"):
+        first_this = today.replace(day=1)
+        first_prev = (first_this - dt.timedelta(days=1)).replace(day=1)
+        return _to_utc_naive(first_prev), _to_utc_naive(first_this)
 
     raise PeriodError("no se reconoce el período: {!r}".format(phrase))
+
+
+def days_in(start: dt.datetime, end: dt.datetime, tz: str) -> list[tuple[str, dt.datetime, dt.datetime]]:
+    """Split a naive-UTC ``[start, end)`` range into local calendar days.
+
+    Returns ``[(date_iso, day_start_utc, day_end_utc)]`` — each day's bounds are
+    local-midnight to next-local-midnight (the last day capped at ``end``).
+    Used for daily series (e.g. best/worst day).
+    """
+    zone = ZoneInfo(tz)
+    start_local = start.replace(tzinfo=UTC).astimezone(zone)
+    end_local = end.replace(tzinfo=UTC).astimezone(zone)
+    day = start_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    out: list[tuple[str, dt.datetime, dt.datetime]] = []
+    while day < end_local:
+        nxt = day + dt.timedelta(days=1)
+        out.append((
+            day.date().isoformat(),
+            _to_utc_naive(day),
+            _to_utc_naive(min(nxt, end_local)),
+        ))
+        day = nxt
+    return out

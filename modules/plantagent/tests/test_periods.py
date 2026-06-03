@@ -76,6 +76,33 @@ def test_now_is_injected_not_read_from_clock():
     assert a != b
 
 
+def test_semana_pasada_is_previous_calendar_week():
+    # NOW_SUMMER = Thu 15 Jan; this Monday = 12 Jan; last week = 5–12 Jan.
+    start, end = periods.resolve("semana pasada", NOW_SUMMER, SCL)
+    assert start == dt.datetime(2026, 1, 5, 3, 0)
+    assert end == dt.datetime(2026, 1, 12, 3, 0)
+
+
+def test_mes_pasado_is_previous_calendar_month():
+    start, end = periods.resolve("mes pasado", NOW_SUMMER, SCL)   # Jan -> December
+    assert start == dt.datetime(2025, 12, 1, 3, 0)
+    assert end == dt.datetime(2026, 1, 1, 3, 0)
+
+
+def test_este_semana_typo_variant_matches_esta_semana():
+    assert periods.resolve("este semana", NOW_SUMMER, SCL) == \
+        periods.resolve("esta semana", NOW_SUMMER, SCL)
+
+
+def test_days_in_splits_a_full_day():
+    start, end = periods.resolve("ayer", NOW_SUMMER, SCL)
+    days = periods.days_in(start, end, SCL)
+    assert len(days) == 1
+    assert days[0] == ("2026-01-14",
+                       dt.datetime(2026, 1, 14, 3, 0),
+                       dt.datetime(2026, 1, 15, 3, 0))
+
+
 def test_unknown_phrase_raises():
     with pytest.raises(periods.PeriodError):
         periods.resolve("el martes pasado a las 3", NOW_SUMMER, SCL)

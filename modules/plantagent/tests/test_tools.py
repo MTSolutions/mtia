@@ -270,6 +270,25 @@ def test_indicator_for_a_section_aggregates_its_devices():
     assert call.calls[0][2][-1] == [1, 2]            # oee called with the device LIST
 
 
+# --- daily series / best-worst day -------------------------------------------
+
+def test_daily_oee_flags_best_and_worst_day():
+    by_day = {"2026-06-01": 0.5, "2026-06-02": 0.8, "2026-06-03": 0.3}
+
+    def call(fn, client, start, end, devid):
+        return by_day.get(start.date().isoformat())
+
+    ctx = make_ctx(devices=[{"id": 1, "name": "A"}], mtapi_call=call)
+    r = tools.dispatch("daily_oee", {"node": "A", "period": "esta semana"}, ctx)
+    assert len(r["series"]) == 3
+    assert r["best_day"] == {"date": "2026-06-02", "oee": 0.8}
+    assert r["worst_day"] == {"date": "2026-06-03", "oee": 0.3}
+
+
+def test_daily_oee_advertised():
+    assert "daily_oee" in {t["function"]["name"] for t in tools.TOOL_SPECS}
+
+
 # --- no-data flagging (T8) ----------------------------------------------------
 
 def test_indicator_none_value_flags_no_data():

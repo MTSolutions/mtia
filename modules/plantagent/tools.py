@@ -274,6 +274,34 @@ def _tool_production(args: dict, ctx: ToolContext) -> dict:
     }
 
 
+def _tool_daily_oee(args: dict, ctx: ToolContext) -> dict:
+    """Daily OEE series for a node over a period; flags best and worst day.
+
+    Computes one official OEE per local calendar day (no model arithmetic) and
+    returns the series plus best/worst — answers '¿el mejor/peor día?'.
+    """
+    label, ntype, dev_ids = _resolve_node(args, ctx)
+    start, end = _resolve_period(args, ctx)
+    arg = dev_ids[0] if len(dev_ids) == 1 else dev_ids
+    series = []
+    for date_iso, day_start, day_end in periods.days_in(start, end, ctx.tz):
+        value = _call(ctx, "oee", day_start, day_end, arg)
+        if value is not None:
+            series.append({"date": date_iso, "oee": value})
+    if not series:
+        return {"node": label, "type": ntype, "series": [], "no_data": True,
+                "period": [start.isoformat(), end.isoformat()]}
+    return {
+        "node": label,
+        "type": ntype,
+        "series": series,
+        "best_day": max(series, key=lambda d: d["oee"]),
+        "worst_day": min(series, key=lambda d: d["oee"]),
+        "no_data": False,
+        "period": [start.isoformat(), end.isoformat()],
+    }
+
+
 def _indicator_spec(name: str, desc: str) -> dict:
     return {
         "type": "function",
@@ -374,10 +402,31 @@ _PRODUCTION_SPEC = {
     },
 }
 
+_DAILY_OEE_SPEC = {
+    "type": "function",
+    "function": {
+        "name": "daily_oee",
+        "description": "OEE día a día de un nodo (equipo/línea/sección/planta) en "
+                       "un período, con el mejor y el peor día. Úsalo para "
+                       "'¿cuál fue el mejor/peor día?'.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "node": {
+                    "type": "string",
+                    "description": "Nombre de equipo/línea/sección/planta.",
+                },
+                "period": _PERIOD_PROP,
+            },
+            "required": ["node", "period"],
+        },
+    },
+}
+
 # Advertised to the LLM.
 TOOL_SPECS = (
     [_indicator_spec(n, d) for n, d in _INDICATORS.items()]
-    + [_RANK_OEE_SPEC, _TOP_STOPS_SPEC, _PRODUCTION_SPEC]
+    + [_RANK_OEE_SPEC, _TOP_STOPS_SPEC, _PRODUCTION_SPEC, _DAILY_OEE_SPEC]
 )
 
 _DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
@@ -386,6 +435,7 @@ _DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
 _DISPATCH["rank_oee"] = _tool_rank_oee
 _DISPATCH["top_stops"] = _tool_top_stops
 _DISPATCH["production"] = _tool_production
+_DISPATCH["daily_oee"] = _tool_daily_oee
 
 
 def dispatch(name: str, args: dict, ctx: ToolContext) -> dict:
