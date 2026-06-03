@@ -17,6 +17,44 @@ def _llm_model() -> str:
     return os.environ.get("LLM_MODEL", "gemma4:e4b")
 
 
+async def chat_tools(
+    messages: list[dict],
+    tools: list[dict],
+    model: str | None = None,
+    options: dict | None = None,
+    think: bool = True,
+) -> dict:
+    """Call Ollama /api/chat with tools and return the assistant `message`.
+
+    Tool calling requires a complete (non-streamed) response — Ollama only
+    populates `message.tool_calls` when `stream=False`. `think` defaults to True
+    because Gemma 4's docs note reasoning significantly improves function-calling
+    accuracy; the caller streams the final user-facing answer with `chat_stream`.
+
+    Returns the raw `message` dict, e.g.::
+
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"function": {"name": "oee", "arguments": {"devid": 1079}}}]}
+
+    A response with no tool call simply omits `tool_calls`.
+    """
+    payload = {
+        "model": model or _llm_model(),
+        "messages": messages,
+        "tools": tools,
+        "stream": False,
+        "think": think,
+    }
+    if options:
+        payload["options"] = options
+
+    async with httpx.AsyncClient(timeout=None) as client:
+        r = await client.post(f"{_ollama_url()}/api/chat", json=payload)
+        r.raise_for_status()
+        data = r.json()
+    return data.get("message") or {}
+
+
 async def chat_stream(
     messages: list[dict],
     model: str | None = None,
