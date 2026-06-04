@@ -209,6 +209,52 @@ def _tool_oee_breakdown(args: dict, ctx: ToolContext) -> dict:
     }
 
 
+def _tool_compare_periods(args: dict, ctx: ToolContext) -> dict:
+    """Compare a node across two periods: OEE-factor deltas and which stops
+    changed. Both periods are turn-aware. Answers 'cómo se compara el turno
+    actual con el mismo turno de la semana pasada y qué cambió'."""
+    label, ntype, dev_ids = _resolve_node(args, ctx)
+    pa = args.get("period_a") or args.get("period")
+    pb = args.get("period_b")
+    if not pa or not pb:
+        raise ToolError("indica dos períodos: 'period_a' y 'period_b'")
+    start_a, end_a = _resolve_period_for({"period": pa}, ctx, dev_ids)
+    start_b, end_b = _resolve_period_for({"period": pb}, ctx, dev_ids)
+    arg = dev_ids[0] if len(dev_ids) == 1 else dev_ids
+
+    def _metrics(s, e):
+        out = {}
+        for ind in ("oee", "disponibilidad", "rendimiento", "calidad"):
+            try:
+                out[ind] = _call(ctx, ind, s, e, arg)
+            except ToolError:
+                out[ind] = None
+        return out
+
+    def _stops(s, e):
+        data = _call(ctx, "pareto", s, e, arg) or {}
+        return {r.get("desc"): (r.get("time_s") or 0) for r in data.get("codstates", [])}
+
+    ma, mb = _metrics(start_a, end_a), _metrics(start_b, end_b)
+    deltas = {
+        k: (round(ma[k] - mb[k], 4) if ma[k] is not None and mb[k] is not None else None)
+        for k in ma
+    }
+    sa, sb = _stops(start_a, end_a), _stops(start_b, end_b)
+    changes = sorted(
+        ({"reason": d, "delta_h": round(sa.get(d, 0) - sb.get(d, 0), 2)}
+         for d in set(sa) | set(sb)),
+        key=lambda c: abs(c["delta_h"]), reverse=True)[:5]
+    return {
+        "node": label, "type": ntype,
+        "a": {"period": [start_a.isoformat(), end_a.isoformat()], **ma},
+        "b": {"period": [start_b.isoformat(), end_b.isoformat()], **mb},
+        "deltas": deltas,
+        "stop_changes": changes,
+        "period": [start_a.isoformat(), end_a.isoformat()],
+    }
+
+
 def _tool_rank_devices(args: dict, ctx: ToolContext) -> dict:
     """Rank the plant's devices by an indicator, worst or best first.
 
@@ -709,17 +755,43 @@ _OEE_BREAKDOWN_SPEC = {
     },
 }
 
+_COMPARE_PERIODS_SPEC = {
+    "type": "function",
+    "function": {
+        "name": "compare_periods",
+        "description": "Compara un nodo entre dos períodos: deltas de OEE y sus "
+                       "factores, y qué detenciones cambiaron. Úsalo para "
+                       "'¿cómo se compara el turno actual con el mismo turno de la "
+                       "semana pasada y qué cambió?'.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "node": {"type": "string",
+                         "description": "Nombre de equipo/línea/sección/planta."},
+                "period_a": {"type": "string",
+                             "description": "Primer período (p.ej. 'este turno')."},
+                "period_b": {"type": "string",
+                             "description": "Segundo período (p.ej. 'mismo turno la "
+                                            "semana pasada')."},
+            },
+            "required": ["node", "period_a", "period_b"],
+        },
+    },
+}
+
 # Advertised to the LLM.
 TOOL_SPECS = (
     [_indicator_spec(n, d) for n, d in _INDICATORS.items()]
     + [_OEE_BREAKDOWN_SPEC, _RANK_DEVICES_SPEC, _TOP_STOPS_SPEC, _PRODUCTION_SPEC,
-       _DAILY_OEE_SPEC, _RANK_DOWNTIME_SPEC, _SABANA_SPEC, _STOPS_DETAIL_SPEC]
+       _DAILY_OEE_SPEC, _RANK_DOWNTIME_SPEC, _SABANA_SPEC, _STOPS_DETAIL_SPEC,
+       _COMPARE_PERIODS_SPEC]
 )
 
 _DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
     name: _make_indicator_tool(name) for name in _INDICATORS
 }
 _DISPATCH["oee_breakdown"] = _tool_oee_breakdown
+_DISPATCH["compare_periods"] = _tool_compare_periods
 _DISPATCH["rank_devices"] = _tool_rank_devices
 _DISPATCH["rank_oee"] = _tool_rank_devices   # legacy alias (defaults indicator=oee)
 _DISPATCH["top_stops"] = _tool_top_stops

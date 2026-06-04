@@ -264,6 +264,35 @@ def test_oee_breakdown_advertised():
     assert "oee_breakdown" in {t["function"]["name"] for t in tools.TOOL_SPECS}
 
 
+# --- compare periods (Q7) ----------------------------------------------------
+
+def test_compare_periods_returns_deltas_and_stop_changes():
+    # indicator values differ per period (by start date); pareto per period.
+    # ayer = 2026-06-02; "semana pasada" starts Mon 2026-05-25.
+    def call(fn, client, start, end, *rest):
+        day = start.date().isoformat()
+        if fn in ("oee", "disponibilidad", "rendimiento", "calidad"):
+            return {"2026-06-02": 0.80, "2026-05-25": 0.60}.get(day)
+        if fn == "pareto":
+            return {"2026-06-02": {"codstates": [{"desc": "Falla", "time_s": 5.0}]},
+                    "2026-05-25": {"codstates": [{"desc": "Falla", "time_s": 2.0}]}}[day]
+        raise KeyError(fn)
+
+    ctx = make_ctx(devices=[{"id": 1, "name": "X"}], mtapi_call=call)
+    r = tools.dispatch("compare_periods",
+                       {"node": "X", "period_a": "ayer", "period_b": "semana pasada"}, ctx)
+    # ayer = 2026-06-02 (0.80), semana pasada starts 2026-05-26 (0.60) -> delta +0.20
+    assert r["deltas"]["oee"] == 0.20
+    assert r["a"]["oee"] == 0.80 and r["b"]["oee"] == 0.60
+    assert r["stop_changes"][0] == {"reason": "Falla", "delta_h": 3.0}
+
+
+def test_compare_periods_requires_two_periods():
+    ctx = make_ctx(devices=[{"id": 1, "name": "X"}], mtapi_call=lambda *a: None)
+    with pytest.raises(tools.ToolError):
+        tools.dispatch("compare_periods", {"node": "X", "period_a": "hoy"}, ctx)
+
+
 # --- device resolution by name -----------------------------------------------
 
 def test_indicator_accepts_device_by_name():

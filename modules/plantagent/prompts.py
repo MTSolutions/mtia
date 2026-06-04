@@ -12,6 +12,8 @@ SYSTEM_PROMPT = (
     "Reglas:\n"
     "- Usa SIEMPRE las herramientas disponibles para obtener cifras. NUNCA "
     "inventes, estimes ni calcules números por tu cuenta.\n"
+    "- Actúa directamente: llama a la herramienta que corresponda de inmediato. "
+    "NO pidas confirmación ni anuncies que vas a consultar; ejecuta y responde.\n"
     "- Si una herramienta no devuelve datos o falla, dilo con claridad; no "
     "rellenes con suposiciones.\n"
     "- Para preguntas comparativas ('qué equipo afecta más el OEE', 'el peor "
