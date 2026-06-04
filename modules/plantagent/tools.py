@@ -16,7 +16,7 @@ import datetime as dt
 from dataclasses import dataclass, field
 from typing import Callable
 
-from modules.plantagent import mtapi, periods, scope
+from modules.plantagent import mtapi, periods, scope, turns
 
 
 class ToolError(ValueError):
@@ -144,6 +144,23 @@ def _resolve_period(args: dict, ctx: ToolContext) -> tuple[dt.datetime, dt.datet
         raise ToolError(str(e))
 
 
+def _resolve_period_for(args: dict, ctx: ToolContext, dev_ids: list[int]
+                        ) -> tuple[dt.datetime, dt.datetime]:
+    """Turn-aware period resolution for a node. Turn phrases ('este turno',
+    'turno noche', 'mismo turno la semana pasada') resolve via mtapi2 using a
+    representative device; everything else delegates to periods.resolve.
+    """
+    phrase = args.get("period") or "hoy"
+    if turns.is_turn_phrase(phrase) and dev_ids:
+        now_naive = ctx.now.astimezone(dt.timezone.utc).replace(tzinfo=None)
+        try:
+            return turns.resolve_turn(phrase, ctx.client, dev_ids[0], now_naive,
+                                      ctx.tz, ctx.mtapi_call or mtapi.call)
+        except turns.TurnError as e:
+            raise ToolError(str(e))
+    return _resolve_period(args, ctx)
+
+
 def _make_indicator_tool(fn_name: str) -> Callable[[dict, ToolContext], dict]:
     def _tool(args: dict, ctx: ToolContext) -> dict:
         label, ntype, dev_ids = _resolve_node(args, ctx)
@@ -162,6 +179,34 @@ def _make_indicator_tool(fn_name: str) -> Callable[[dict, ToolContext], dict]:
             "period": [start.isoformat(), end.isoformat()],
         }
     return _tool
+
+
+def _tool_oee_breakdown(args: dict, ctx: ToolContext) -> dict:
+    """OEE of a node plus its three factors (disponibilidad, rendimiento,
+    calidad), flagging the factor that drags it most (the lowest). Supports turn
+    periods ('este turno'). Reuses the per-indicator calls."""
+    label, ntype, dev_ids = _resolve_node(args, ctx)
+    start, end = _resolve_period_for(args, ctx, dev_ids)
+    arg = dev_ids[0] if len(dev_ids) == 1 else dev_ids
+    vals = {}
+    for ind in ("oee", "disponibilidad", "rendimiento", "calidad"):
+        try:
+            vals[ind] = _call(ctx, ind, start, end, arg)
+        except ToolError:
+            vals[ind] = None
+    factors = {k: v for k, v in vals.items() if k != "oee" and v is not None}
+    worst = min(factors, key=factors.get) if factors else None
+    return {
+        "node": label,
+        "type": ntype,
+        "oee": vals.get("oee"),
+        "disponibilidad": vals.get("disponibilidad"),
+        "rendimiento": vals.get("rendimiento"),
+        "calidad": vals.get("calidad"),
+        "worst_factor": worst,
+        "no_data": vals.get("oee") is None,
+        "period": [start.isoformat(), end.isoformat()],
+    }
 
 
 def _tool_rank_devices(args: dict, ctx: ToolContext) -> dict:
@@ -642,16 +687,39 @@ _STOPS_DETAIL_SPEC = {
     },
 }
 
+_OEE_BREAKDOWN_SPEC = {
+    "type": "function",
+    "function": {
+        "name": "oee_breakdown",
+        "description": "OEE de un nodo y sus tres factores (disponibilidad, "
+                       "rendimiento, calidad), indicando cuál lo afecta más (el más "
+                       "bajo). Soporta períodos de turno ('este turno'). Úsalo para "
+                       "'¿OEE y qué factor lo afecta más?'.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "node": {
+                    "type": "string",
+                    "description": "Nombre de equipo/línea/sección/planta.",
+                },
+                "period": _PERIOD_PROP,
+            },
+            "required": ["node", "period"],
+        },
+    },
+}
+
 # Advertised to the LLM.
 TOOL_SPECS = (
     [_indicator_spec(n, d) for n, d in _INDICATORS.items()]
-    + [_RANK_DEVICES_SPEC, _TOP_STOPS_SPEC, _PRODUCTION_SPEC, _DAILY_OEE_SPEC,
-       _RANK_DOWNTIME_SPEC, _SABANA_SPEC, _STOPS_DETAIL_SPEC]
+    + [_OEE_BREAKDOWN_SPEC, _RANK_DEVICES_SPEC, _TOP_STOPS_SPEC, _PRODUCTION_SPEC,
+       _DAILY_OEE_SPEC, _RANK_DOWNTIME_SPEC, _SABANA_SPEC, _STOPS_DETAIL_SPEC]
 )
 
 _DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
     name: _make_indicator_tool(name) for name in _INDICATORS
 }
+_DISPATCH["oee_breakdown"] = _tool_oee_breakdown
 _DISPATCH["rank_devices"] = _tool_rank_devices
 _DISPATCH["rank_oee"] = _tool_rank_devices   # legacy alias (defaults indicator=oee)
 _DISPATCH["top_stops"] = _tool_top_stops

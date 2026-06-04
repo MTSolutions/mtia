@@ -236,6 +236,34 @@ def test_production_out_of_scope_devid_raises():
     assert call.calls == []
 
 
+# --- oee breakdown (Q1) ------------------------------------------------------
+
+def test_oee_breakdown_flags_worst_factor():
+    vals = {"oee": 0.50, "disponibilidad": 0.90, "rendimiento": 0.60, "calidad": 0.93}
+    ctx = make_ctx(devices=[{"id": 1, "name": "X"}],
+                   mtapi_call=lambda fn, c, *a: vals.get(fn))
+    r = tools.dispatch("oee_breakdown", {"node": "X", "period": "hoy"}, ctx)
+    assert r["oee"] == 0.50
+    assert r["worst_factor"] == "rendimiento"           # 0.60 is the lowest factor
+
+
+def test_oee_breakdown_supports_turn_period():
+    def call(fn, client, *args):
+        if fn == "currentturn":
+            return ("TD", dt.datetime(2026, 6, 3, 11, 0), dt.datetime(2026, 6, 3, 18, 30))
+        return 0.7
+
+    ctx = make_ctx(devices=[{"id": 1, "name": "X"}], mtapi_call=call)
+    r = tools.dispatch("oee_breakdown", {"node": "X", "period": "este turno"}, ctx)
+    assert r["oee"] == 0.7
+    # current turn resolved via mtapi, capped at ctx.now (12:00)
+    assert r["period"] == ["2026-06-03T11:00:00", "2026-06-03T12:00:00"]
+
+
+def test_oee_breakdown_advertised():
+    assert "oee_breakdown" in {t["function"]["name"] for t in tools.TOOL_SPECS}
+
+
 # --- device resolution by name -----------------------------------------------
 
 def test_indicator_accepts_device_by_name():
