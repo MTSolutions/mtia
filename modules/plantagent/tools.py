@@ -255,6 +255,66 @@ def _tool_compare_periods(args: dict, ctx: ToolContext) -> dict:
     }
 
 
+def _tool_production_target(args: dict, ctx: ToolContext) -> dict:
+    """Target vs produced with a pace projection for a period ('hoy', 'este
+    turno'). target = sum of overlapping Plan.value (mtapi2.plan_target);
+    produced = prod_dev_kp per device (reused). projected = produced scaled to
+    the full period at the current pace; shortfall = target - projected."""
+    if args.get("node") or args.get("device"):
+        label, ntype, dev_ids = _resolve_node(args, ctx)
+    else:
+        dev_ids = list(ctx.device_ids)
+        label, ntype = ctx.plant_name or "planta", "plant"
+    phrase = (args.get("period") or "hoy").strip().lower()
+    start, end = _resolve_period_for(args, ctx, dev_ids)
+
+    # Ongoing periods ("hoy", "este turno") resolve capped at now — for the
+    # projection we need the FULL period end (next local midnight / scheduled
+    # turn end). Past periods keep end as-is (no projection: it's complete).
+    now_naive = ctx.now.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    eff_end = min(end, now_naive)
+    full_end = end
+    if abs((end - now_naive).total_seconds()) < 120:          # capped at now
+        if turns.is_turn_phrase(phrase) and dev_ids:
+            _name, _s, turn_end = (ctx.mtapi_call or mtapi.call)(
+                "currentturn", ctx.client, dev_ids[0])
+            full_end = turn_end or end
+        elif phrase == "hoy":
+            full_end = periods.days_in(
+                start, start + dt.timedelta(hours=36), ctx.tz)[0][2]
+
+    data = _call(ctx, "plan_target", start, full_end, dev_ids) or {}
+    target = data.get("target") or 0
+
+    produced, any_data = 0, False
+    for devid in dev_ids:
+        v = _call(ctx, "prod_dev_kp", start, eff_end, devid)
+        if v is not None:
+            produced += v
+            any_data = True
+
+    elapsed = (eff_end - start).total_seconds()
+    total = (full_end - start).total_seconds()
+    projected = round(produced * (total / elapsed)) if elapsed > 0 and total > 0 else None
+    shortfall = (round(target - projected) if target and projected is not None else None)
+    return {
+        "node": label,
+        "type": ntype,
+        "target": target or None,
+        # 'plan' (orden de producción) or 'expected_speed' (vmax threshold —
+        # producto seteado sin planificación).
+        "target_source": data.get("source"),
+        "produced": produced if any_data else None,
+        "projected_end_of_period": projected,
+        "projected_shortfall": shortfall,
+        "on_track": (projected >= target) if (target and projected is not None) else None,
+        "elapsed_pct": round(100.0 * elapsed / total, 1) if total > 0 else None,
+        "plans": (data.get("plans") or [])[:10],
+        "no_data": not any_data and not target,
+        "period": [start.isoformat(), end.isoformat()],
+    }
+
+
 def _tool_rank_devices(args: dict, ctx: ToolContext) -> dict:
     """Rank the plant's devices by an indicator, worst or best first.
 
@@ -755,6 +815,29 @@ _OEE_BREAKDOWN_SPEC = {
     },
 }
 
+_PRODUCTION_TARGET_SPEC = {
+    "type": "function",
+    "function": {
+        "name": "production_target",
+        "description": "Meta de producción vs producido y faltante PROYECTADO al "
+                       "ritmo actual, para un período ('hoy', 'este turno'). Úsalo "
+                       "para '¿vamos a cumplir la meta de hoy?' o '¿cuál es el "
+                       "faltante proyectado?'.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "node": {
+                    "type": "string",
+                    "description": "Nombre de equipo/línea/sección (opcional; por "
+                                   "defecto toda la planta).",
+                },
+                "period": _PERIOD_PROP,
+            },
+            "required": ["period"],
+        },
+    },
+}
+
 _COMPARE_PERIODS_SPEC = {
     "type": "function",
     "function": {
@@ -784,7 +867,7 @@ TOOL_SPECS = (
     [_indicator_spec(n, d) for n, d in _INDICATORS.items()]
     + [_OEE_BREAKDOWN_SPEC, _RANK_DEVICES_SPEC, _TOP_STOPS_SPEC, _PRODUCTION_SPEC,
        _DAILY_OEE_SPEC, _RANK_DOWNTIME_SPEC, _SABANA_SPEC, _STOPS_DETAIL_SPEC,
-       _COMPARE_PERIODS_SPEC]
+       _COMPARE_PERIODS_SPEC, _PRODUCTION_TARGET_SPEC]
 )
 
 _DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
@@ -792,6 +875,7 @@ _DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
 }
 _DISPATCH["oee_breakdown"] = _tool_oee_breakdown
 _DISPATCH["compare_periods"] = _tool_compare_periods
+_DISPATCH["production_target"] = _tool_production_target
 _DISPATCH["rank_devices"] = _tool_rank_devices
 _DISPATCH["rank_oee"] = _tool_rank_devices   # legacy alias (defaults indicator=oee)
 _DISPATCH["top_stops"] = _tool_top_stops

@@ -287,6 +287,43 @@ def test_compare_periods_returns_deltas_and_stop_changes():
     assert r["stop_changes"][0] == {"reason": "Falla", "delta_h": 3.0}
 
 
+def test_production_target_projects_shortfall():
+    # period "hoy": 04:00 -> 12:00 elapsed of a 24h day (NOW=12:00 UTC, SCL -4).
+    def call(fn, client, start, end, *rest):
+        if fn == "plan_target":
+            return {"target": 1200, "source": "plan", "plans": [], "detail": []}
+        if fn == "prod_dev_kp":
+            return 300                       # produced so far (8h of 24h)
+        raise KeyError(fn)
+
+    ctx = make_ctx(devices=[{"id": 1, "name": "X"}], mtapi_call=call)
+    r = tools.dispatch("production_target", {"node": "X", "period": "hoy"}, ctx)
+    assert r["target"] == 1200 and r["target_source"] == "plan"
+    assert r["produced"] == 300
+    assert r["projected_end_of_period"] == 900   # 300 * 24h/8h
+    assert r["projected_shortfall"] == 300       # 1200 - 900
+    assert r["on_track"] is False
+
+
+def test_production_target_expected_speed_fallback_source():
+    def call(fn, client, start, end, *rest):
+        if fn == "plan_target":
+            return {"target": 800, "source": "expected_speed", "plans": [],
+                    "detail": [{"devid": 1, "expected": 800}]}
+        if fn == "prod_dev_kp":
+            return 400
+        raise KeyError(fn)
+
+    ctx = make_ctx(devices=[{"id": 1, "name": "X"}], mtapi_call=call)
+    r = tools.dispatch("production_target", {"node": "X", "period": "hoy"}, ctx)
+    assert r["target_source"] == "expected_speed"
+    assert r["target"] == 800
+
+
+def test_production_target_advertised():
+    assert "production_target" in {t["function"]["name"] for t in tools.TOOL_SPECS}
+
+
 def test_compare_periods_requires_two_periods():
     ctx = make_ctx(devices=[{"id": 1, "name": "X"}], mtapi_call=lambda *a: None)
     with pytest.raises(tools.ToolError):
