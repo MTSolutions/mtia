@@ -135,6 +135,34 @@ async def test_fatal_llm_error_emits_error_event(monkeypatch):
     assert "error" in [n for n, _ in events]   # clean error event, no crash
 
 
+async def test_empty_turn_is_retried(monkeypatch):
+    ctx, mtapi_calls = make_ctx()
+    # first turn stalls (empty), then a real tool call, then a final turn
+    script_chat_tools(monkeypatch, [{}, _oee_call(1079), {"content": "ok"}])
+    script_chat_stream(monkeypatch, ["listo"])
+
+    events = await _collect("q", ctx)
+    names = [n for n, _ in events]
+    assert "tool" in names              # recovered past the empty turn
+    assert mtapi_calls and mtapi_calls[0][0] == "oee"
+    assert names[-1] == "done"
+
+
+async def test_persistent_empty_turns_stop_and_fallback(monkeypatch):
+    ctx, _ = make_ctx()
+
+    async def always_empty(messages, tool_specs, model=None, options=None, think=True):
+        return {}
+
+    monkeypatch.setattr(agent.llm, "chat_tools", always_empty)
+    script_chat_stream(monkeypatch, [])   # final answer also empty
+
+    events = await _collect("q", ctx)
+    names = [n for n, _ in events]
+    assert names[-1] == "done"            # bounded — no infinite loop
+    assert any(n == "token" for n, _ in events)   # guard fallback message emitted
+
+
 async def test_no_tool_call_just_streams(monkeypatch):
     ctx, mtapi_calls = make_ctx()
     script_chat_tools(monkeypatch, [{"content": "respuesta directa"}])

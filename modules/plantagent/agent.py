@@ -20,6 +20,10 @@ from modules.plantagent.tools import ToolContext
 from modules.rag import llm
 
 MAX_TOOL_CALLS = 6
+# Reasoning models occasionally emit an empty turn (all in `thinking`, no
+# tool_calls and no content). Retry the tool step a couple of times before
+# giving up, instead of falling straight through to an empty answer.
+MAX_STALL_RETRIES = 2
 
 
 def _coerce_args(raw) -> dict:
@@ -52,6 +56,7 @@ async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]
     try:
         calls = 0
         hit_cap = False
+        stalls = 0
         while True:
             if calls >= MAX_TOOL_CALLS:
                 hit_cap = True
@@ -59,6 +64,11 @@ async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]
             msg = await llm.chat_tools(messages, tools.TOOL_SPECS)
             tool_calls = msg.get("tool_calls") or []
             if not tool_calls:
+                # Empty turn (no tool call, no content) -> the model stalled;
+                # retry the tool step a few times before settling for an answer.
+                if not (msg.get("content") or "").strip() and stalls < MAX_STALL_RETRIES:
+                    stalls += 1
+                    continue
                 break
 
             messages.append(_assistant_turn(msg))
