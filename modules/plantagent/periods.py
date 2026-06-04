@@ -22,6 +22,13 @@ UTC = dt.timezone.utc
 # "últimos N días" / "ultimos N dias" (optional accents, singular/plural).
 _ULTIMOS_DIAS = re.compile(r"^[uú]ltimos?\s+(\d+)\s+d[ií]as?$")
 
+_MONTHS = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+    "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10,
+    "noviembre": 11, "diciembre": 12,
+}
+_MONTH_RE = re.compile(r"\b(" + "|".join(_MONTHS) + r")\b")
+
 
 class PeriodError(ValueError):
     """The relative-date expression could not be resolved."""
@@ -80,6 +87,19 @@ def resolve(phrase: str, now: dt.datetime, tz: str) -> tuple[dt.datetime, dt.dat
         first_this = today.replace(day=1)
         first_prev = (first_this - dt.timedelta(days=1)).replace(day=1)
         return _to_utc_naive(first_prev), _to_utc_naive(first_this)
+
+    # Named month ("mayo", "el mes de mayo") -> its most recent past/current
+    # occurrence. Current month is capped at `now`.
+    mm = _MONTH_RE.search(p)
+    if mm:
+        month = _MONTHS[mm.group(1)]
+        year = today.year if month <= today.month else today.year - 1
+        start = today.replace(year=year, month=month, day=1)
+        end = (start.replace(year=year + 1, month=1) if month == 12
+               else start.replace(month=month + 1))
+        if end > local:                       # current/ongoing month
+            end = local
+        return _to_utc_naive(start), _to_utc_naive(end)
 
     raise PeriodError("no se reconoce el período: {!r}".format(phrase))
 

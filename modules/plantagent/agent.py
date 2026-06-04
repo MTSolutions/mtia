@@ -91,8 +91,15 @@ async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]
             })
 
         # Final user-facing answer: streamed prose, no tools, no chain-of-thought.
+        streamed = False
         async for token in llm.chat_stream(messages):
+            streamed = True
             yield schemas.EVENT_TOKEN, {"text": token}
+        if not streamed:
+            # The model produced no answer (e.g. only thinking) — never return blank.
+            yield schemas.EVENT_TOKEN, {"text": (
+                "No pude responder con las herramientas disponibles. Reformula la "
+                "pregunta indicando equipo/línea/sección y período.")}
         yield schemas.EVENT_DONE, {}
     except Exception:
         # Any unhandled failure (e.g. LLM transport) ends as a clean SSE error,

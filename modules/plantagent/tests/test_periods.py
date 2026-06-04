@@ -103,6 +103,20 @@ def test_days_in_splits_a_full_day():
                        dt.datetime(2026, 1, 15, 3, 0))
 
 
+def test_named_month_past_is_full_month():
+    # NOW_SUMMER = 15 Jan 2026; "el mes de diciembre" -> Dec 2025 (full).
+    start, end = periods.resolve("el mes de diciembre", NOW_SUMMER, SCL)
+    assert start == dt.datetime(2025, 12, 1, 3, 0)
+    assert end == dt.datetime(2026, 1, 1, 3, 0)
+
+
+def test_named_month_current_is_capped_at_now():
+    # "enero" with now = 15 Jan -> current month, capped at now.
+    start, end = periods.resolve("enero", NOW_SUMMER, SCL)
+    assert start == dt.datetime(2026, 1, 1, 3, 0)
+    assert end == dt.datetime(2026, 1, 15, 18, 30)            # now (naive UTC)
+
+
 def test_unknown_phrase_raises():
     with pytest.raises(periods.PeriodError):
         periods.resolve("el martes pasado a las 3", NOW_SUMMER, SCL)

@@ -164,30 +164,38 @@ def _make_indicator_tool(fn_name: str) -> Callable[[dict, ToolContext], dict]:
     return _tool
 
 
-def _tool_rank_oee(args: dict, ctx: ToolContext) -> dict:
-    """Rank the plant's devices by OEE (worst first), via per-device oee() calls.
+def _tool_rank_devices(args: dict, ctx: ToolContext) -> dict:
+    """Rank the plant's devices by an indicator, worst or best first.
 
-    We deliberately do NOT use devtree(indicators=['oee']): mtapi2 computes a
-    section/plant indicator by passing a *list* of devids to oee(), which faults
-    (IndexError) for the default client. Scalar per-device oee() is reliable.
-    The model never does arithmetic — we only sort the official figures.
+    Per-device indicator calls (scalar oee()/disponibilidad()/… are reliable;
+    we avoid devtree(indicators=…) which faults on empty sections). The model
+    never does arithmetic — we only sort the official figures.
+    order: 'worst' (ascending, e.g. "qué equipo afecta más el OEE") or 'best'
+    (descending, e.g. "la máquina con más disponibilidad").
     """
+    indicator = (args.get("indicator") or "oee").strip().lower()
+    if indicator not in _INDICATORS:
+        raise ToolError(
+            "indicador inválido: {!r} (usa {})".format(
+                indicator, ", ".join(_INDICATORS)))
+    order = (args.get("order") or "worst").strip().lower()
     start, end = _resolve_period(args, ctx)
+
     scores: list[tuple[int, float]] = []
     for devid in ctx.device_ids:
         try:
-            value = _call(ctx, "oee", start, end, devid)
+            value = _call(ctx, indicator, start, end, devid)
         except ToolError:
             value = None  # skip a device whose indicator errors; don't abort the rank
         if value is not None:
             scores.append((devid, value))
 
-    scores.sort(key=lambda t: t[1])  # ascending: worst OEE first
+    scores.sort(key=lambda t: t[1], reverse=(order == "best"))
     return {
-        "indicator": "oee",
-        "ranking": "worst_first",
+        "indicator": indicator,
+        "order": order,
         "devices": [
-            {"devid": d, "name": ctx.name_for(d), "oee": v} for d, v in scores[:10]
+            {"devid": d, "name": ctx.name_for(d), "value": v} for d, v in scores[:10]
         ],
         "no_data": not scores,
         "period": [start.isoformat(), end.isoformat()],
@@ -447,16 +455,31 @@ def _indicator_spec(name: str, desc: str) -> dict:
     }
 
 
-_RANK_OEE_SPEC = {
+_RANK_DEVICES_SPEC = {
     "type": "function",
     "function": {
-        "name": "rank_oee",
-        "description": "Clasifica los equipos de la planta por OEE (peor primero) "
-                       "en un período. Úsalo para preguntas comparativas como "
-                       "'¿qué equipo afecta más el OEE?' o 'el peor equipo'.",
+        "name": "rank_devices",
+        "description": "Clasifica los equipos de la planta por un indicador en un "
+                       "período. Úsalo para comparativas: 'qué equipo afecta más el "
+                       "OEE' (indicator=oee, order=worst), 'la máquina con más "
+                       "disponibilidad' (indicator=disponibilidad, order=best), etc.",
         "parameters": {
             "type": "object",
-            "properties": {"period": _PERIOD_PROP},
+            "properties": {
+                "indicator": {
+                    "type": "string",
+                    "enum": ["oee", "disponibilidad", "rendimiento", "calidad",
+                             "cumplimiento"],
+                    "description": "Indicador a clasificar (por defecto 'oee').",
+                },
+                "order": {
+                    "type": "string",
+                    "enum": ["worst", "best"],
+                    "description": "'worst' = peor primero (más bajo); 'best' = "
+                                   "mejor primero (más alto). Por defecto 'worst'.",
+                },
+                "period": _PERIOD_PROP,
+            },
             "required": ["period"],
         },
     },
@@ -622,14 +645,15 @@ _STOPS_DETAIL_SPEC = {
 # Advertised to the LLM.
 TOOL_SPECS = (
     [_indicator_spec(n, d) for n, d in _INDICATORS.items()]
-    + [_RANK_OEE_SPEC, _TOP_STOPS_SPEC, _PRODUCTION_SPEC, _DAILY_OEE_SPEC,
+    + [_RANK_DEVICES_SPEC, _TOP_STOPS_SPEC, _PRODUCTION_SPEC, _DAILY_OEE_SPEC,
        _RANK_DOWNTIME_SPEC, _SABANA_SPEC, _STOPS_DETAIL_SPEC]
 )
 
 _DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
     name: _make_indicator_tool(name) for name in _INDICATORS
 }
-_DISPATCH["rank_oee"] = _tool_rank_oee
+_DISPATCH["rank_devices"] = _tool_rank_devices
+_DISPATCH["rank_oee"] = _tool_rank_devices   # legacy alias (defaults indicator=oee)
 _DISPATCH["top_stops"] = _tool_top_stops
 _DISPATCH["production"] = _tool_production
 _DISPATCH["daily_oee"] = _tool_daily_oee

@@ -58,7 +58,7 @@ def test_per_device_indicator_calls_right_mtapi_fn(name, fn):
 def test_all_indicators_are_advertised_in_tool_specs():
     names = {t["function"]["name"] for t in tools.TOOL_SPECS}
     assert {"oee", "disponibilidad", "rendimiento", "calidad",
-            "cumplimiento", "rank_oee"} <= names
+            "cumplimiento", "rank_devices"} <= names
 
 
 def test_out_of_scope_devid_rejected():
@@ -78,41 +78,53 @@ def test_unavailable_indicator_becomes_toolerror():
 
 # --- ranking via per-device oee() (devtree[indicators] faults on sections) ----
 
-def oee_by_dev(oee_map, names=None):
-    """Stub: oee() returns per-devid values; getdevs() returns id/name pairs."""
+def oee_by_dev(value_map):
+    """Stub: any per-device indicator returns the mapped value for that devid."""
     calls = []
 
     def _call(fn, client, *args):
         calls.append((fn, client, args))
-        if fn == "oee":
-            return oee_map.get(args[-1])
-        if fn == "getdevs":
-            return [{"id": d, "name": (names or {}).get(d)} for d in oee_map]
-        raise KeyError(fn)
+        return value_map.get(args[-1])
 
     _call.calls = calls  # type: ignore[attr-defined]
     return _call
 
 
-def test_rank_oee_returns_worst_first_from_per_device_calls():
+def test_rank_devices_worst_first_by_default():
     call = oee_by_dev({1079: 0.82, 1080: 0.55, 1081: 0.73})
     ctx = make_ctx(device_ids=(1079, 1080, 1081), names={1080: "Etiquetadora"},
                    mtapi_call=call)
-    result = tools.dispatch("rank_oee", {"period": "últimos 3 días"}, ctx)
+    result = tools.dispatch("rank_devices", {"period": "últimos 3 días"}, ctx)
 
-    # One oee() call per device (no faulting devtree-with-indicators).
-    assert [c[0] for c in call.calls].count("oee") == 3
+    assert result["indicator"] == "oee" and result["order"] == "worst"
+    assert [c[0] for c in call.calls].count("oee") == 3   # one oee() per device
     devices = result["devices"]
-    # worst OEE first: 0.55 (1080) < 0.73 (1081) < 0.82 (1079)
-    assert [d["devid"] for d in devices] == [1080, 1081, 1079]
-    assert devices[0]["oee"] == 0.55
+    assert [d["devid"] for d in devices] == [1080, 1081, 1079]   # worst first
+    assert devices[0]["value"] == 0.55
     assert devices[0]["name"] == "Etiquetadora"
 
 
-def test_rank_oee_ignores_devs_without_oee():
+def test_rank_devices_best_by_indicator():
+    # "la máquina con más disponibilidad" -> indicator=disponibilidad, order=best
+    call = oee_by_dev({1079: 0.82, 1080: 0.55, 1081: 0.73})
+    ctx = make_ctx(device_ids=(1079, 1080, 1081), mtapi_call=call)
+    result = tools.dispatch("rank_devices", {"indicator": "disponibilidad",
+                                             "order": "best", "period": "mayo"}, ctx)
+    assert call.calls[0][0] == "disponibilidad"
+    assert [d["devid"] for d in result["devices"]] == [1079, 1081, 1080]  # best first
+    assert result["devices"][0]["value"] == 0.82
+
+
+def test_rank_devices_invalid_indicator_raises():
+    ctx = make_ctx(mtapi_call=oee_by_dev({}))
+    with pytest.raises(tools.ToolError):
+        tools.dispatch("rank_devices", {"indicator": "humedad", "period": "hoy"}, ctx)
+
+
+def test_rank_devices_ignores_devs_without_value():
     call = oee_by_dev({1079: 0.6, 1080: None})
     ctx = make_ctx(device_ids=(1079, 1080), mtapi_call=call)
-    result = tools.dispatch("rank_oee", {"period": "hoy"}, ctx)
+    result = tools.dispatch("rank_devices", {"period": "hoy"}, ctx)
     assert [d["devid"] for d in result["devices"]] == [1079]
 
 
@@ -408,10 +420,10 @@ def test_indicator_real_value_is_not_no_data():
     assert r["no_data"] is False
 
 
-def test_rank_oee_empty_flags_no_data():
-    call = oee_by_dev({1079: None, 1080: None})       # no device has OEE data
+def test_rank_devices_empty_flags_no_data():
+    call = oee_by_dev({1079: None, 1080: None})       # no device has data
     ctx = make_ctx(device_ids=(1079, 1080), mtapi_call=call)
-    r = tools.dispatch("rank_oee", {"period": "hoy"}, ctx)
+    r = tools.dispatch("rank_devices", {"period": "hoy"}, ctx)
     assert r["devices"] == [] and r["no_data"] is True
 
 
