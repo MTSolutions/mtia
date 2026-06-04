@@ -277,6 +277,7 @@ usan el conjunto de equipos del nodo.
 | `production` | `prod_dev_kp`/`prod_dev_t`/`total_tons` | producción (`measure`: `standard`=kp, `counter`, `tons`; suma por nodo) |
 | `daily_oee` | `oee` por día | "¿cuál fue el mejor/peor día?" (serie diaria + mejor/peor) |
 | `sabana` | `sabana` | detalle de corridas/intervalos con producción (totales, por producto, muestra) |
+| `stops_detail` | `stop_intervals` | "¿a qué hora fue la detención X?" (lista cronológica de paradas con hora/duración/motivo; filtro por motivo) |
 
 **`period`** acepta: `hoy`, `ayer`, `anteayer`, `esta semana`, `semana pasada`,
 `este mes`, `mes pasado`, `últimos N días`.
