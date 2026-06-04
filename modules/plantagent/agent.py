@@ -13,6 +13,7 @@ and ToolContext.mtapi_call — no network required.
 from __future__ import annotations
 
 import json
+import os
 from typing import AsyncIterator
 
 from modules.plantagent import prompts, schemas, tools
@@ -24,6 +25,11 @@ MAX_TOOL_CALLS = 6
 # tool_calls and no content). Retry the tool step a couple of times before
 # giving up, instead of falling straight through to an empty answer.
 MAX_STALL_RETRIES = 2
+# Ollama's default context (4096) is too small for the tool catalog + thinking:
+# the model truncates mid-reasoning and emits empty turns. Size it for the
+# specs + history + reasoning budget.
+NUM_CTX = int(os.environ.get("PLANTAGENT_NUM_CTX", "16384"))
+_LLM_OPTS = {"num_ctx": NUM_CTX}
 
 
 def _coerce_args(raw) -> dict:
@@ -61,7 +67,7 @@ async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]
             if calls >= MAX_TOOL_CALLS:
                 hit_cap = True
                 break
-            msg = await llm.chat_tools(messages, tools.TOOL_SPECS)
+            msg = await llm.chat_tools(messages, tools.TOOL_SPECS, options=_LLM_OPTS)
             tool_calls = msg.get("tool_calls") or []
             if not tool_calls:
                 # Empty turn (no tool call, no content) -> the model stalled;
@@ -102,7 +108,7 @@ async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]
 
         # Final user-facing answer: streamed prose, no tools, no chain-of-thought.
         streamed = False
-        async for token in llm.chat_stream(messages):
+        async for token in llm.chat_stream(messages, options=_LLM_OPTS):
             streamed = True
             yield schemas.EVENT_TOKEN, {"text": token}
         if not streamed:
