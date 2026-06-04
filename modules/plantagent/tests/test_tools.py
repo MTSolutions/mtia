@@ -454,8 +454,8 @@ def test_daily_oee_flags_best_and_worst_day():
     ctx = make_ctx(devices=[{"id": 1, "name": "A"}], mtapi_call=call)
     r = tools.dispatch("daily_oee", {"node": "A", "period": "esta semana"}, ctx)
     assert len(r["series"]) == 3
-    assert r["best_day"] == {"date": "2026-06-02", "oee": 0.8}
-    assert r["worst_day"] == {"date": "2026-06-03", "oee": 0.3}
+    assert r["best_day"] == {"date": "2026-06-02", "oee": 0.8, "oee_pct": "80.0%"}
+    assert r["worst_day"] == {"date": "2026-06-03", "oee": 0.3, "oee_pct": "30.0%"}
 
 
 def test_daily_oee_advertised():
@@ -593,3 +593,25 @@ def test_top_stops_empty_flags_no_data():
     ctx = make_ctx(mtapi_call=call)
     r = tools.dispatch("top_stops", {"period": "hoy"}, ctx)
     assert r["stops"] == [] and r["no_data"] is True
+
+
+# --- ratio display formatting (T9) ---------------------------------------------
+
+def test_dispatch_adds_pct_fields_for_ratio_indicators():
+    call = recording_call({"oee": 0.1651})
+    ctx = make_ctx(mtapi_call=call)
+    r = tools.dispatch("oee", {"devid": 1079, "period": "hoy"}, ctx)
+    assert r["value_pct"] == "16.5%"
+
+
+def test_rank_devices_rows_carry_pct():
+    call = oee_by_dev({1079: 0.1651, 1080: 0.5})
+    ctx = make_ctx(device_ids=(1079, 1080), mtapi_call=call)
+    r = tools.dispatch("rank_devices", {"period": "hoy"}, ctx)
+    assert [d["value_pct"] for d in r["devices"]] == ["16.5%", "50.0%"]
+
+
+def test_pct_not_added_to_non_ratio_figures():
+    payload = {"downtime_h": 3.2, "production": 1200}
+    tools._add_pct_fields(payload)
+    assert "downtime_h_pct" not in payload and "production_pct" not in payload

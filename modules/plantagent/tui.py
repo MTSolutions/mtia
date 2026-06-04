@@ -77,6 +77,13 @@ def ask(base_url: str, token: str, client: str, plant_id: int, question: str) ->
                 print("{}\n[error] {}{}".format(RED, payload.get("message", ""), RESET))
             elif event == "done":
                 print()
+                t = payload.get("timing")
+                if t:
+                    print("{}  ⏱ total={}s llm={}s tools={}s answer={}s "
+                          "ttft={}s rounds={} calls={}{}".format(
+                              DIM, t.get("total_s"), t.get("llm_s"),
+                              t.get("tools_s"), t.get("answer_s"), t.get("ttft_s"),
+                              t.get("rounds"), t.get("tool_calls"), RESET))
 
 
 def main() -> None:

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import AsyncIterator
 
 from modules.plantagent import prompts, schemas, tools
@@ -59,6 +60,12 @@ async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]
         {"role": "user", "content": prompts.build_user_message(question, ctx)},
     ]
 
+    # Latency breakdown (T9): LLM rounds vs mtapi2 tools vs answer streaming.
+    t_start = time.monotonic()
+    llm_s = tools_s = 0.0
+    rounds = 0
+    ttft_s = None
+
     try:
         calls = 0
         hit_cap = False
@@ -67,7 +74,10 @@ async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]
             if calls >= MAX_TOOL_CALLS:
                 hit_cap = True
                 break
+            t0 = time.monotonic()
             msg = await llm.chat_tools(messages, tools.TOOL_SPECS, options=_LLM_OPTS)
+            llm_s += time.monotonic() - t0
+            rounds += 1
             tool_calls = msg.get("tool_calls") or []
             if not tool_calls:
                 # Empty turn (no tool call, no content) -> the model stalled;
@@ -83,11 +93,16 @@ async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]
                 fn = tc.get("function") or {}
                 name = fn.get("name")
                 args = _coerce_args(fn.get("arguments"))
+                t0 = time.monotonic()
                 try:
                     result = tools.dispatch(name, args, ctx)
+                    dt = time.monotonic() - t0
+                    tools_s += dt
                     yield schemas.EVENT_TOOL, {
-                        "name": name, "args": args, "period": result.get("period")}
+                        "name": name, "args": args, "period": result.get("period"),
+                        "elapsed": round(dt, 2)}
                 except tools.ToolError as e:
+                    tools_s += time.monotonic() - t0
                     result = {"error": str(e)}
                     yield schemas.EVENT_TOOL, {"name": name, "args": args, "error": str(e)}
                 except Exception:  # unexpected — never crash the stream over one tool
@@ -109,6 +124,8 @@ async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]
         # Final user-facing answer: streamed prose, no tools, no chain-of-thought.
         streamed = False
         async for token in llm.chat_stream(messages, options=_LLM_OPTS):
+            if not streamed:
+                ttft_s = time.monotonic() - t_start
             streamed = True
             yield schemas.EVENT_TOKEN, {"text": token}
         if not streamed:
@@ -116,7 +133,14 @@ async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]
             yield schemas.EVENT_TOKEN, {"text": (
                 "No pude responder con las herramientas disponibles. Reformula la "
                 "pregunta indicando equipo/línea/sección y período.")}
-        yield schemas.EVENT_DONE, {}
+        total_s = time.monotonic() - t_start
+        yield schemas.EVENT_DONE, {"timing": {
+            "total_s": round(total_s, 2),
+            "llm_s": round(llm_s, 2),            # tool-selection rounds
+            "tools_s": round(tools_s, 2),        # mtapi2 execution
+            "answer_s": round(total_s - llm_s - tools_s, 2),
+            "ttft_s": round(ttft_s, 2) if ttft_s is not None else None,
+            "rounds": rounds, "tool_calls": calls}}
     except Exception:
         # Any unhandled failure (e.g. LLM transport) ends as a clean SSE error,
         # never a fabricated answer or a broken stream.

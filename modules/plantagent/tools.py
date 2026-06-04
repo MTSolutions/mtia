@@ -1044,6 +1044,31 @@ _DISPATCH["sabana"] = _tool_sabana
 _DISPATCH["stops_detail"] = _tool_stops_detail
 
 
+_RATIO_KEYS = set(_INDICATORS)  # indicator figures are 0..1 ratios
+
+
+def _add_pct_fields(obj, indicator: str | None = None) -> None:
+    """Recursively annotate ratio figures with a preformatted '<key>_pct' string.
+
+    Mutates the payload in place. The model must quote figures verbatim and
+    never convert them (it wrote '0.16%' for an OEE of 0.1651), so the display
+    form ('16.5%') is computed here and the prompt instructs citing the *_pct
+    field as-is.
+    """
+    if isinstance(obj, dict):
+        ind = obj.get("indicator", indicator)
+        for k in list(obj):
+            v = obj[k]
+            if isinstance(v, (dict, list)):
+                _add_pct_fields(v, ind)
+            elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                if k in _RATIO_KEYS or (k == "value" and ind in _RATIO_KEYS):
+                    obj[k + "_pct"] = "{:.1f}%".format(v * 100.0)
+    elif isinstance(obj, list):
+        for item in obj:
+            _add_pct_fields(item, indicator)
+
+
 def dispatch(name: str, args: dict, ctx: ToolContext) -> dict:
     """Validate and execute a tool call; return a JSON-able result dict.
 
@@ -1061,4 +1086,6 @@ def dispatch(name: str, args: dict, ctx: ToolContext) -> dict:
                 name, sorted(_DISPATCH)))
     # Models occasionally vary argument-key casing (e.g. 'Reason'); normalize.
     args = {str(k).lower(): v for k, v in (args or {}).items()}
-    return fn(args, ctx)
+    result = fn(args, ctx)
+    _add_pct_fields(result)
+    return result

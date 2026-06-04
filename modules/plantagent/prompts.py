@@ -24,6 +24,12 @@ SYSTEM_PROMPT = (
     "- En el parámetro 'period' usa el valor que corresponda EXACTAMENTE a la "
     "pregunta: 'la semana pasada' → 'semana pasada' (no 'este mes'); 'el mes "
     "pasado' → 'mes pasado'; 'hoy'/'ayer'/'esta semana'/'últimos N días' igual.\n"
+    "- El RESULTADO de cada herramienta trae los indicadores como fracción "
+    "acompañada de su versión en porcentaje ya formateada (p. ej. "
+    "\"value\": 0.165, \"value_pct\": \"16.5%\"). Al redactar, copia ese "
+    "porcentaje formateado tal cual ('16.5%'); nunca conviertas la fracción tú "
+    "mismo ni escribas nombres de campos en la respuesta. Para tener cifras "
+    "primero DEBES llamar la herramienta.\n"
     "- Responde en español neutro (sin voseo), de forma breve y precisa, "
     "indicando el equipo y el período consultado.\n"
 )
