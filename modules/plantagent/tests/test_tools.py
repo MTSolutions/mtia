@@ -324,6 +324,25 @@ def test_production_target_advertised():
     assert "production_target" in {t["function"]["name"] for t in tools.TOOL_SPECS}
 
 
+def test_recent_products_lists_skus_newest_first_with_default_period():
+    rows = [
+        {"devid": 1, "start": "2026-06-02 10:00:00", "end": "2026-06-02 18:00:00",
+         "product": "Escobillón rojo", "sku": "ESC-R"},
+        {"devid": 1, "start": "2026-06-01 08:00:00", "end": "2026-06-02 10:00:00",
+         "product": "Escobillón azul", "sku": "ESC-A"},
+    ]
+
+    def call(fn, client, start, end, dev_ids):
+        assert fn == "product_intervals"
+        return rows
+
+    ctx = make_ctx(devices=[{"id": 1, "name": "Esc2"}], mtapi_call=call)
+    r = tools.dispatch("recent_products", {"node": "Esc2"}, ctx)   # no period -> default
+    assert [p["sku"] for p in r["products"]] == ["ESC-R", "ESC-A"]
+    assert r["products"][0]["device"] == "Esc2"
+    assert r["no_data"] is False
+
+
 def test_compare_periods_requires_two_periods():
     ctx = make_ctx(devices=[{"id": 1, "name": "X"}], mtapi_call=lambda *a: None)
     with pytest.raises(tools.ToolError):

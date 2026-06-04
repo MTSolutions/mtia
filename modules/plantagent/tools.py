@@ -315,6 +315,37 @@ def _tool_production_target(args: dict, ctx: ToolContext) -> dict:
     }
 
 
+def _tool_recent_products(args: dict, ctx: ToolContext) -> dict:
+    """Latest products/SKUs produced by a node, newest first. Backed by
+    mtapi2.product_intervals (prod_interval + Product name/sku, reused).
+    Defaults to the last 7 days when no period is given."""
+    label, ntype, dev_ids = _resolve_node(args, ctx)
+    if not args.get("period"):
+        args = dict(args)
+        args["period"] = "últimos 7 días"
+    start, end = _resolve_period_for(args, ctx, dev_ids)
+
+    rows = _call(ctx, "product_intervals", start, end, dev_ids) or []
+    items = [
+        {
+            "start": r.get("start"),
+            "end": r.get("end"),
+            "product": r.get("product"),
+            "sku": r.get("sku"),
+            "device": ctx.name_for(r.get("devid")),
+        }
+        for r in rows[:20]
+    ]
+    return {
+        "node": label,
+        "type": ntype,
+        "products": items,                     # newest first
+        "truncated": len(rows) > 20,
+        "no_data": not items,
+        "period": [start.isoformat(), end.isoformat()],
+    }
+
+
 def _tool_rank_devices(args: dict, ctx: ToolContext) -> dict:
     """Rank the plant's devices by an indicator, worst or best first.
 
@@ -815,6 +846,28 @@ _OEE_BREAKDOWN_SPEC = {
     },
 }
 
+_RECENT_PRODUCTS_SPEC = {
+    "type": "function",
+    "function": {
+        "name": "recent_products",
+        "description": "Últimos productos/SKU producidos por un equipo/línea/"
+                       "sección, del más reciente al más antiguo (por defecto, "
+                       "últimos 7 días). Úsalo para '¿cuáles son los últimos SKU "
+                       "producidos por X?'.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "node": {
+                    "type": "string",
+                    "description": "Nombre de equipo/línea/sección/planta.",
+                },
+                "period": _PERIOD_PROP,
+            },
+            "required": ["node"],
+        },
+    },
+}
+
 _PRODUCTION_TARGET_SPEC = {
     "type": "function",
     "function": {
@@ -867,7 +920,7 @@ TOOL_SPECS = (
     [_indicator_spec(n, d) for n, d in _INDICATORS.items()]
     + [_OEE_BREAKDOWN_SPEC, _RANK_DEVICES_SPEC, _TOP_STOPS_SPEC, _PRODUCTION_SPEC,
        _DAILY_OEE_SPEC, _RANK_DOWNTIME_SPEC, _SABANA_SPEC, _STOPS_DETAIL_SPEC,
-       _COMPARE_PERIODS_SPEC, _PRODUCTION_TARGET_SPEC]
+       _COMPARE_PERIODS_SPEC, _PRODUCTION_TARGET_SPEC, _RECENT_PRODUCTS_SPEC]
 )
 
 _DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
@@ -876,6 +929,7 @@ _DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
 _DISPATCH["oee_breakdown"] = _tool_oee_breakdown
 _DISPATCH["compare_periods"] = _tool_compare_periods
 _DISPATCH["production_target"] = _tool_production_target
+_DISPATCH["recent_products"] = _tool_recent_products
 _DISPATCH["rank_devices"] = _tool_rank_devices
 _DISPATCH["rank_oee"] = _tool_rank_devices   # legacy alias (defaults indicator=oee)
 _DISPATCH["top_stops"] = _tool_top_stops
