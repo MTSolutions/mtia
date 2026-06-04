@@ -270,6 +270,45 @@ def _tool_sabana(args: dict, ctx: ToolContext) -> dict:
     }
 
 
+def _tool_stops_detail(args: dict, ctx: ToolContext) -> dict:
+    """Chronological list of a node's stops with START/END time, duration and
+    reason (from sabana rows that carry a stop code). Optional 'reason' filters
+    by reason substring. Answers '¿a qué hora fue la detención X?'.
+    """
+    if args.get("node") or args.get("device"):
+        label, ntype, dev_ids = _resolve_node(args, ctx)
+    else:
+        dev_ids = list(ctx.device_ids)
+        label, ntype = ctx.plant_name or "planta", "plant"
+    start, end = _resolve_period(args, ctx)
+    reason = (args.get("reason") or "").strip().lower()
+
+    # S_reg-based (universal across clients), not SabanaRow.
+    rows = _call(ctx, "stop_intervals", start, end, dev_ids) or []
+    stops = []
+    for r in rows:
+        desc = (r.get("reason") or "").strip()
+        if reason and reason not in desc.lower():
+            continue
+        stops.append({
+            "start": r.get("start"),
+            "end": r.get("end"),
+            "duration_min": r.get("duration_min"),
+            "reason": desc or None,
+            "device": ctx.name_for(r.get("devid")),
+        })
+    stops.sort(key=lambda s: s.get("start") or "")
+    return {
+        "node": label,
+        "type": ntype,
+        "n_stops": len(stops),
+        "stops": stops[:80],
+        "truncated": len(stops) > 80,
+        "no_data": not stops,
+        "period": [start.isoformat(), end.isoformat()],
+    }
+
+
 def _tool_top_stops(args: dict, ctx: ToolContext) -> dict:
     """Most significant stops in a period, by total time or by occurrence count.
 
@@ -552,11 +591,39 @@ _SABANA_SPEC = {
     },
 }
 
+_STOPS_DETAIL_SPEC = {
+    "type": "function",
+    "function": {
+        "name": "stops_detail",
+        "description": "Lista cronológica de las detenciones de un nodo en un "
+                       "período, con HORA de inicio/fin, duración y motivo. Úsalo "
+                       "para '¿a qué hora fue la detención X?' o el detalle temporal "
+                       "de paradas. (top_stops da agregados; esto da los horarios.)",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "node": {
+                    "type": "string",
+                    "description": "Nombre de equipo/línea/sección (opcional; por "
+                                   "defecto toda la planta).",
+                },
+                "period": _PERIOD_PROP,
+                "reason": {
+                    "type": "string",
+                    "description": "Filtro opcional por motivo (substring), p.ej. "
+                                   "'PROGRAMADO', 'AVERIA', 'CAMBIO DE FORMATO'.",
+                },
+            },
+            "required": ["period"],
+        },
+    },
+}
+
 # Advertised to the LLM.
 TOOL_SPECS = (
     [_indicator_spec(n, d) for n, d in _INDICATORS.items()]
     + [_RANK_OEE_SPEC, _TOP_STOPS_SPEC, _PRODUCTION_SPEC, _DAILY_OEE_SPEC,
-       _RANK_DOWNTIME_SPEC, _SABANA_SPEC]
+       _RANK_DOWNTIME_SPEC, _SABANA_SPEC, _STOPS_DETAIL_SPEC]
 )
 
 _DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
@@ -568,6 +635,7 @@ _DISPATCH["production"] = _tool_production
 _DISPATCH["daily_oee"] = _tool_daily_oee
 _DISPATCH["rank_downtime"] = _tool_rank_downtime
 _DISPATCH["sabana"] = _tool_sabana
+_DISPATCH["stops_detail"] = _tool_stops_detail
 
 
 def dispatch(name: str, args: dict, ctx: ToolContext) -> dict:
@@ -579,4 +647,6 @@ def dispatch(name: str, args: dict, ctx: ToolContext) -> dict:
     fn = _DISPATCH.get(name)
     if fn is None:
         raise ToolError("herramienta desconocida: {!r}".format(name))
+    # Models occasionally vary argument-key casing (e.g. 'Reason'); normalize.
+    args = {str(k).lower(): v for k, v in (args or {}).items()}
     return fn(args, ctx)

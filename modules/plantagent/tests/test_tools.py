@@ -344,6 +344,54 @@ def test_sabana_advertised():
     assert "sabana" in {t["function"]["name"] for t in tools.TOOL_SPECS}
 
 
+# --- stops detail (timing) ---------------------------------------------------
+
+# stop_intervals (S_reg) returns only stops, with 'reason' + 'devid'.
+_STOP_ROWS = [
+    {"devid": 1, "start": "2026-06-02 12:00:00", "end": "2026-06-02 12:30:00",
+     "duration_min": 30.0, "reason": "PROGRAMADO - COLACION"},
+    {"devid": 1, "start": "2026-06-02 10:00:00", "end": "2026-06-02 10:05:00",
+     "duration_min": 5.0, "reason": "AVERIA - FALLA"},
+]
+
+
+def test_stops_detail_lists_stops_chronologically():
+    def call(fn, client, start, end, dev_ids):
+        assert fn == "stop_intervals"
+        return _STOP_ROWS
+
+    ctx = make_ctx(devices=[{"id": 1, "name": "Env"}], mtapi_call=call)
+    r = tools.dispatch("stops_detail", {"node": "Env", "period": "ayer"}, ctx)
+    assert r["n_stops"] == 2
+    assert [s["start"] for s in r["stops"]] == [
+        "2026-06-02 10:00:00", "2026-06-02 12:00:00"]         # sorted by start
+    assert r["stops"][1]["reason"] == "PROGRAMADO - COLACION"
+    assert r["stops"][1]["device"] == "Env"                  # devid -> name
+
+
+def test_stops_detail_filters_by_reason():
+    def call(fn, client, start, end, dev_ids):
+        return _STOP_ROWS
+
+    ctx = make_ctx(devices=[{"id": 1, "name": "Env"}], mtapi_call=call)
+    r = tools.dispatch("stops_detail", {"node": "Env", "period": "ayer",
+                                        "reason": "programado"}, ctx)
+    assert r["n_stops"] == 1
+    assert r["stops"][0]["reason"] == "PROGRAMADO - COLACION"
+
+
+def test_dispatch_normalizes_arg_key_casing():
+    # Models sometimes capitalize keys (e.g. 'Reason'); dispatch lowercases them.
+    def call(fn, client, start, end, dev_ids):
+        return _STOP_ROWS
+
+    ctx = make_ctx(devices=[{"id": 1, "name": "Env"}], mtapi_call=call)
+    r = tools.dispatch("stops_detail", {"Node": "Env", "Period": "ayer",
+                                        "Reason": "programado"}, ctx)
+    assert r["n_stops"] == 1
+    assert r["stops"][0]["reason"] == "PROGRAMADO - COLACION"
+
+
 # --- no-data flagging (T8) ----------------------------------------------------
 
 def test_indicator_none_value_flags_no_data():
