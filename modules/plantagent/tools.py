@@ -13,6 +13,7 @@ in code from official per-device figures, not by the model.
 from __future__ import annotations
 
 import datetime as dt
+import difflib
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -312,6 +313,36 @@ def _tool_production_target(args: dict, ctx: ToolContext) -> dict:
         "plans": (data.get("plans") or [])[:10],
         "no_data": not any_data and not target,
         "period": [start.isoformat(), end.isoformat()],
+    }
+
+
+def _tool_turns_oee(args: dict, ctx: ToolContext) -> dict:
+    """OEE per turn of a node for a day/period, flagging best and worst turn.
+    Reuses getturns (the date's turn windows) + the oee indicator. Answers
+    '¿qué turno tuvo mejor OEE el 28 de mayo?'."""
+    label, ntype, dev_ids = _resolve_node(args, ctx)
+    start, _end = _resolve_period_for(args, ctx, dev_ids)
+    data = _call(ctx, "getturns", dev_ids[0], start) or {}
+    arg = dev_ids[0] if len(dev_ids) == 1 else dev_ids
+    rows = []
+    for name, bounds in (data.get("turns") or {}).items():
+        t_start, t_end = bounds[0], bounds[1]
+        try:
+            value = _call(ctx, "oee", t_start, t_end, arg)
+        except ToolError:
+            value = None
+        if value is not None:
+            rows.append({"turn": name, "oee": value,
+                         "start": str(t_start), "end": str(t_end)})
+    rows.sort(key=lambda r: r["oee"], reverse=True)
+    return {
+        "node": label,
+        "type": ntype,
+        "turns": rows,                          # best first
+        "best_turn": rows[0] if rows else None,
+        "worst_turn": rows[-1] if rows else None,
+        "no_data": not rows,
+        "period": [start.isoformat(), _end.isoformat()],
     }
 
 
@@ -874,6 +905,28 @@ _OEE_BREAKDOWN_SPEC = {
     },
 }
 
+_TURNS_OEE_SPEC = {
+    "type": "function",
+    "function": {
+        "name": "turns_oee",
+        "description": "OEE por TURNO de un equipo/nodo en un día o período, con "
+                       "el mejor y el peor turno. Úsalo para '¿qué turno tuvo "
+                       "mejor/peor OEE el 28 de mayo?'. El period acepta también "
+                       "fechas como '28 de mayo'.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "node": {
+                    "type": "string",
+                    "description": "Nombre de equipo/línea/sección/planta.",
+                },
+                "period": _PERIOD_PROP,
+            },
+            "required": ["node", "period"],
+        },
+    },
+}
+
 _TURNS_INFO_SPEC = {
     "type": "function",
     "function": {
@@ -969,7 +1022,7 @@ TOOL_SPECS = (
     + [_OEE_BREAKDOWN_SPEC, _RANK_DEVICES_SPEC, _TOP_STOPS_SPEC, _PRODUCTION_SPEC,
        _DAILY_OEE_SPEC, _RANK_DOWNTIME_SPEC, _SABANA_SPEC, _STOPS_DETAIL_SPEC,
        _COMPARE_PERIODS_SPEC, _PRODUCTION_TARGET_SPEC, _RECENT_PRODUCTS_SPEC,
-       _TURNS_INFO_SPEC]
+       _TURNS_INFO_SPEC, _TURNS_OEE_SPEC]
 )
 
 _DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
@@ -980,6 +1033,7 @@ _DISPATCH["compare_periods"] = _tool_compare_periods
 _DISPATCH["production_target"] = _tool_production_target
 _DISPATCH["recent_products"] = _tool_recent_products
 _DISPATCH["turns_info"] = _tool_turns_info
+_DISPATCH["turns_oee"] = _tool_turns_oee
 _DISPATCH["rank_devices"] = _tool_rank_devices
 _DISPATCH["rank_oee"] = _tool_rank_devices   # legacy alias (defaults indicator=oee)
 _DISPATCH["top_stops"] = _tool_top_stops
@@ -998,7 +1052,13 @@ def dispatch(name: str, args: dict, ctx: ToolContext) -> dict:
     """
     fn = _DISPATCH.get(name)
     if fn is None:
-        raise ToolError("herramienta desconocida: {!r}".format(name))
+        # Models occasionally garble tool names ('daney_oee' ~ 'daily_oee').
+        close = difflib.get_close_matches(name or "", list(_DISPATCH), n=1, cutoff=0.75)
+        if close:
+            fn = _DISPATCH[close[0]]
+        else:
+            raise ToolError("herramienta desconocida: {!r}. Disponibles: {}".format(
+                name, sorted(_DISPATCH)))
     # Models occasionally vary argument-key casing (e.g. 'Reason'); normalize.
     args = {str(k).lower(): v for k, v in (args or {}).items()}
     return fn(args, ctx)

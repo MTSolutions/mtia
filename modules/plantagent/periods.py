@@ -28,6 +28,8 @@ _MONTHS = {
     "noviembre": 11, "diciembre": 12,
 }
 _MONTH_RE = re.compile(r"\b(" + "|".join(_MONTHS) + r")\b")
+# "28 de mayo", "el 5 de enero" — specific calendar day.
+_DAY_OF_MONTH_RE = re.compile(r"\b(\d{1,2})\s+de\s+(" + "|".join(_MONTHS) + r")\b")
 
 
 class PeriodError(ValueError):
@@ -87,6 +89,22 @@ def resolve(phrase: str, now: dt.datetime, tz: str) -> tuple[dt.datetime, dt.dat
         first_this = today.replace(day=1)
         first_prev = (first_this - dt.timedelta(days=1)).replace(day=1)
         return _to_utc_naive(first_prev), _to_utc_naive(first_this)
+
+    # Specific day ("28 de mayo") -> that calendar day, most recent past
+    # occurrence (an ongoing today is capped at now). Checked BEFORE the bare
+    # month so "28 de mayo" doesn't resolve to the whole month.
+    dm = _DAY_OF_MONTH_RE.search(p)
+    if dm:
+        day, month = int(dm.group(1)), _MONTHS[dm.group(2)]
+        year = today.year if (month, day) <= (today.month, today.day) else today.year - 1
+        try:
+            start = today.replace(year=year, month=month, day=day)
+        except ValueError:
+            raise PeriodError("fecha inválida: {!r}".format(phrase))
+        end = start + dt.timedelta(days=1)
+        if end > local:
+            end = local
+        return _to_utc_naive(start), _to_utc_naive(end)
 
     # Named month ("mayo", "el mes de mayo") -> its most recent past/current
     # occurrence. Current month is capped at `now`.

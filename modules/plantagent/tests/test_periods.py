@@ -117,6 +117,20 @@ def test_named_month_current_is_capped_at_now():
     assert end == dt.datetime(2026, 1, 15, 18, 30)            # now (naive UTC)
 
 
+def test_specific_day_of_month():
+    # NOW_SUMMER = 15 Jan 2026 -> "28 de diciembre" = Dec 28 2025 (full day).
+    start, end = periods.resolve("el 28 de diciembre", NOW_SUMMER, SCL)
+    assert start == dt.datetime(2025, 12, 28, 3, 0)
+    assert end == dt.datetime(2025, 12, 29, 3, 0)
+
+
+def test_specific_day_this_year():
+    # "5 de enero" with now = 15 Jan -> Jan 5 this year.
+    start, end = periods.resolve("5 de enero", NOW_SUMMER, SCL)
+    assert start == dt.datetime(2026, 1, 5, 3, 0)
+    assert end == dt.datetime(2026, 1, 6, 3, 0)
+
+
 def test_unknown_phrase_raises():
     with pytest.raises(periods.PeriodError):
         periods.resolve("el martes pasado a las 3", NOW_SUMMER, SCL)

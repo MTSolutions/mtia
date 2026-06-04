@@ -324,6 +324,36 @@ def test_production_target_advertised():
     assert "production_target" in {t["function"]["name"] for t in tools.TOOL_SPECS}
 
 
+def test_turns_oee_flags_best_and_worst_turn():
+    turns_payload = {"turns": {
+        "TD": (dt.datetime(2026, 5, 28, 11, 0), dt.datetime(2026, 5, 28, 18, 30)),
+        "TN": (dt.datetime(2026, 5, 29, 2, 0), dt.datetime(2026, 5, 29, 11, 0)),
+    }}
+    oee_by_turn_start = {"2026-05-28 11:00:00": 0.6, "2026-05-29 02:00:00": 0.9}
+
+    def call(fn, client, *args):
+        if fn == "getturns":
+            return turns_payload
+        if fn == "oee":
+            return oee_by_turn_start[str(args[0])]
+        raise KeyError(fn)
+
+    ctx = make_ctx(devices=[{"id": 1, "name": "Esc2"}], mtapi_call=call)
+    r = tools.dispatch("turns_oee", {"node": "Esc2", "period": "28 de mayo"}, ctx)
+    assert r["best_turn"]["turn"] == "TN" and r["best_turn"]["oee"] == 0.9
+    assert r["worst_turn"]["turn"] == "TD"
+
+
+def test_dispatch_fuzzy_matches_garbled_tool_names():
+    # 'daney_oee' (model hallucination) resolves to daily_oee.
+    def call(fn, client, start, end, devid):
+        return 0.5
+
+    ctx = make_ctx(devices=[{"id": 1, "name": "X"}], mtapi_call=call)
+    r = tools.dispatch("daney_oee", {"node": "X", "period": "ayer"}, ctx)
+    assert "series" in r                        # daily_oee shape
+
+
 def test_turns_info_lists_turns_with_local_times():
     turns_payload = {"turns": {
         "TD": (dt.datetime(2026, 6, 3, 11, 0), dt.datetime(2026, 6, 3, 18, 30)),
