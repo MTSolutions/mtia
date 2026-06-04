@@ -263,31 +263,44 @@ traza de auditoría de cada cifra), `token` (`{text}`), `done` (`{}`), `error`
 
 ### Catálogo de herramientas
 
-Todas aceptan un **`node`** (nombre de equipo/línea/sección/planta) y un
-**`period`** relativo. Para nodos agregados, la familia OEE pasa la lista de
-dev_ids al indicador (que agrega); `production` suma; `top_stops`/`rank_downtime`
-usan el conjunto de equipos del nodo.
+El agente trabaja **por nombre** y casi todas las herramientas aceptan un
+**`node`** (equipo, línea, sección o planta) y un **`period`** relativo. Para un
+nodo agregado, la familia OEE pasa la lista de dev_ids al indicador (que agrega
+internamente); `production` suma; `top_stops`/`rank_downtime`/`stops_detail`/
+`sabana` usan el conjunto de equipos del nodo. Cada llamada emite un evento SSE
+`tool` (traza de auditoría de la cifra).
 
-| Herramienta | mtapi2 | Para |
+| Herramienta | Parámetros | Qué responde / ejemplo |
 |---|---|---|
-| `oee`, `disponibilidad`, `rendimiento`, `calidad`, `cumplimiento` | idem (escalar o lista de dev_ids) | indicador de un nodo en un período |
-| `rank_oee` | `oee` por equipo | "¿qué equipo afecta más el OEE?" (peor primero) |
-| `rank_downtime` | `pareto` por equipo | "¿qué máquina estuvo más tiempo detenida?" (equipos por tiempo detenido) |
-| `top_stops` | `pareto` | "¿detención más repetida/larga?" (motivos; `by`=`count`/`time`, opcional por `node`) |
-| `production` | `prod_dev_kp`/`prod_dev_t`/`total_tons` | producción (`measure`: `standard`=kp, `counter`, `tons`; suma por nodo) |
-| `daily_oee` | `oee` por día | "¿cuál fue el mejor/peor día?" (serie diaria + mejor/peor) |
-| `sabana` | `sabana` | detalle de corridas/intervalos con producción (totales, por producto, muestra) |
-| `stops_detail` | `stop_intervals` | "¿a qué hora fue la detención X?" (lista cronológica de paradas con hora/duración/motivo; filtro por motivo) |
+| `oee` · `disponibilidad` · `rendimiento` · `calidad` · `cumplimiento` | `node`, `period` | el indicador del nodo (0–1). *"¿OEE de la Línea 2 esta semana?"* |
+| `rank_oee` | `period` | equipos por OEE, peor primero. *"¿qué equipo afecta más el OEE?"* |
+| `rank_downtime` | `node?`, `period` | equipos por tiempo total detenido, mayor primero. *"¿qué máquina estuvo más detenida ayer?"* |
+| `top_stops` | `period`, `by`=`time`\|`count`, `node?` | motivos de detención agregados (tiempo o conteo). *"¿la detención más repetida/larga?"* |
+| `stops_detail` | `node?`, `period`, `reason?` | lista cronológica de paradas con hora inicio/fin, duración y motivo. *"¿a qué hora fueron las detenciones programadas?"* |
+| `production` | `node`, `period`, `measure` | producción del nodo (suma). *"¿cuánto produjo la Envasadora ayer?"* |
+| `daily_oee` | `node`, `period` | OEE por día + mejor/peor día. *"¿el mejor día de la semana pasada?"* |
+| `sabana` | `node?`, `period` | detalle de corridas: totales, producción por producto y muestra de filas. *"¿producción por producto de la Termoformadora 9 ayer?"* |
 
-**`period`** acepta: `hoy`, `ayer`, `anteayer`, `esta semana`, `semana pasada`,
-`este mes`, `mes pasado`, `últimos N días`.
+- **`period`**: `hoy`, `ayer`, `anteayer`, `esta semana`, `semana pasada`,
+  `este mes`, `mes pasado`, `últimos N días`.
+- **`measure`** (production): `standard` = contador × kp (default), `counter` =
+  contador crudo, `tons` = toneladas.
+- **`by`** (top_stops): `time` (detención más larga) o `count` (más repetida).
+- **`reason`** (stops_detail): substring del motivo, p.ej. `PROGRAMADO`, `AVERIA`.
 
-> `rank_downtime` (equipos por tiempo detenido) ≠ `top_stops` (motivos de
-> detención por tiempo/conteo).
-> `cumplimiento` es específico por cliente; si no está, la herramienta responde
-> "no disponible" en vez de fallar.
-> `kp` es un **multiplicador de la especificación del producto**, no una unidad;
-> la unidad de medida vive en `Device.unit` (la expone `mtapi2.device_meta`).
+Notas:
+- Tres herramientas de detención, distintas: `top_stops` (motivos agregados) ·
+  `rank_downtime` (equipos por tiempo detenido) · `stops_detail` (cada parada
+  con su horario).
+- **Fuente de datos**: `top_stops`/`rank_downtime`/`stops_detail` leen `S_reg`
+  (vía `pareto`/`stop_intervals`) y sirven para **cualquier cliente**; `sabana`
+  requiere SabanaRows precalculados (clientes con el DAG sabana).
+- `cumplimiento` es específico por cliente; si no está, responde "no disponible"
+  en vez de fallar.
+- `kp` es un **multiplicador de la especificación del producto**, no una unidad;
+  la unidad de medida vive en `Device.unit` (la expone `mtapi2.device_meta`).
+- Resolución por nombre/aislamiento: el árbol con nombres viene de
+  `mtapi2.devtree_named`; `device_meta`/`device_names` filtran por cliente.
 
 ### Variables de entorno
 
