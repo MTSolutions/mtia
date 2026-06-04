@@ -324,6 +324,24 @@ def test_production_target_advertised():
     assert "production_target" in {t["function"]["name"] for t in tools.TOOL_SPECS}
 
 
+def test_turns_info_lists_turns_with_local_times():
+    turns_payload = {"turns": {
+        "TD": (dt.datetime(2026, 6, 3, 11, 0), dt.datetime(2026, 6, 3, 18, 30)),
+        "TN": (dt.datetime(2026, 6, 4, 2, 0), dt.datetime(2026, 6, 4, 11, 0)),
+    }}
+
+    def call(fn, client, devid, d0):
+        assert fn == "getturns"
+        return turns_payload
+
+    ctx = make_ctx(devices=[{"id": 1, "name": "Esc2"}], mtapi_call=call)
+    r = tools.dispatch("turns_info", {"node": "Esc2"}, ctx)
+    by_name = {t["name"]: t for t in r["turns"]}
+    # SCL winter (-4): TD 11:00 UTC -> 07:00 local; TN 02:00 UTC -> 22:00 local.
+    assert by_name["TD"]["start_local"] == "07:00"
+    assert by_name["TN"]["start_local"] == "22:00"
+
+
 def test_recent_products_lists_skus_newest_first_with_default_period():
     rows = [
         {"devid": 1, "start": "2026-06-02 10:00:00", "end": "2026-06-02 18:00:00",

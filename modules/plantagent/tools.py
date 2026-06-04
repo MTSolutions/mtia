@@ -315,6 +315,34 @@ def _tool_production_target(args: dict, ctx: ToolContext) -> dict:
     }
 
 
+def _tool_turns_info(args: dict, ctx: ToolContext) -> dict:
+    """The node's configured turns (names + local start/end times). Backed by
+    mtapi2.getturns (reused) on a representative device of the node."""
+    from zoneinfo import ZoneInfo
+    label, ntype, dev_ids = _resolve_node(args, ctx)
+    now_naive = ctx.now.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    data = _call(ctx, "getturns", dev_ids[0], now_naive) or {}
+    zone = ZoneInfo(ctx.tz)
+    out = []
+    for name, bounds in (data.get("turns") or {}).items():
+        start, end = bounds[0], bounds[1]
+        s_local = start.replace(tzinfo=dt.timezone.utc).astimezone(zone)
+        e_local = end.replace(tzinfo=dt.timezone.utc).astimezone(zone)
+        out.append({
+            "name": name,
+            "start_local": s_local.strftime("%H:%M"),
+            "end_local": e_local.strftime("%H:%M"),
+        })
+    out.sort(key=lambda t: t["start_local"])
+    return {
+        "node": label,
+        "type": ntype,
+        "tz": ctx.tz,
+        "turns": out,
+        "no_data": not out,
+    }
+
+
 def _tool_recent_products(args: dict, ctx: ToolContext) -> dict:
     """Latest products/SKUs produced by a node, newest first. Backed by
     mtapi2.product_intervals (prod_interval + Product name/sku, reused).
@@ -846,6 +874,26 @@ _OEE_BREAKDOWN_SPEC = {
     },
 }
 
+_TURNS_INFO_SPEC = {
+    "type": "function",
+    "function": {
+        "name": "turns_info",
+        "description": "Turnos configurados de un equipo/línea/sección (nombre y "
+                       "horario local de inicio/fin). Úsalo para '¿cuáles son los "
+                       "turnos de X?' o '¿a qué hora empieza el turno?'.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "node": {
+                    "type": "string",
+                    "description": "Nombre de equipo/línea/sección/planta.",
+                },
+            },
+            "required": ["node"],
+        },
+    },
+}
+
 _RECENT_PRODUCTS_SPEC = {
     "type": "function",
     "function": {
@@ -920,7 +968,8 @@ TOOL_SPECS = (
     [_indicator_spec(n, d) for n, d in _INDICATORS.items()]
     + [_OEE_BREAKDOWN_SPEC, _RANK_DEVICES_SPEC, _TOP_STOPS_SPEC, _PRODUCTION_SPEC,
        _DAILY_OEE_SPEC, _RANK_DOWNTIME_SPEC, _SABANA_SPEC, _STOPS_DETAIL_SPEC,
-       _COMPARE_PERIODS_SPEC, _PRODUCTION_TARGET_SPEC, _RECENT_PRODUCTS_SPEC]
+       _COMPARE_PERIODS_SPEC, _PRODUCTION_TARGET_SPEC, _RECENT_PRODUCTS_SPEC,
+       _TURNS_INFO_SPEC]
 )
 
 _DISPATCH: dict[str, Callable[[dict, ToolContext], dict]] = {
@@ -930,6 +979,7 @@ _DISPATCH["oee_breakdown"] = _tool_oee_breakdown
 _DISPATCH["compare_periods"] = _tool_compare_periods
 _DISPATCH["production_target"] = _tool_production_target
 _DISPATCH["recent_products"] = _tool_recent_products
+_DISPATCH["turns_info"] = _tool_turns_info
 _DISPATCH["rank_devices"] = _tool_rank_devices
 _DISPATCH["rank_oee"] = _tool_rank_devices   # legacy alias (defaults indicator=oee)
 _DISPATCH["top_stops"] = _tool_top_stops

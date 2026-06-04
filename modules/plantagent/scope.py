@@ -9,6 +9,8 @@ nodes. ``getplants`` is the source of truth for which plants a client owns.
 from __future__ import annotations
 
 import datetime as dt
+import difflib
+import re
 from typing import Callable
 
 from modules.plantagent import mtapi
@@ -121,6 +123,14 @@ def resolve_node(tree: dict, ref) -> dict | None:
     for n in nodes:
         if low and low in (n.get("name") or "").strip().lower():
             return n
+    # Typo-tolerant fallback (models misspell names, e.g. 'escobillenos') —
+    # but digits are identity ('Línea 9' must NOT match 'Línea 1'), so the
+    # numbers in the query and the candidate must agree.
+    candidates = {(n.get("name") or "").strip().lower(): n
+                  for n in nodes if n.get("name")}
+    close = difflib.get_close_matches(low, list(candidates), n=1, cutoff=0.8)
+    if close and re.findall(r"\d+", low) == re.findall(r"\d+", close[0]):
+        return candidates[close[0]]
     return None
 
 

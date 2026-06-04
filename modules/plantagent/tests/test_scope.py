@@ -99,3 +99,10 @@ def test_devices_in_collects_named_devices():
         {"id": 10, "name": "Envasadora"},
         {"id": 11, "name": "Sopladora"},
     ]
+
+
+def test_resolve_node_tolerates_typos():
+    tree = {"id": 7, "name": "P", "type": "plant", "lines": [], "sections": [],
+            "devs": [{"id": 9, "name": "Máquina de escobillones 2", "type": "dev"}]}
+    node = scope.resolve_node(tree, "Máquina de escobillenos 2")   # typo
+    assert node and node["id"] == 9
