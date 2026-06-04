@@ -273,7 +273,7 @@ internamente); `production` suma; `top_stops`/`rank_downtime`/`stops_detail`/
 | Herramienta | Parámetros | Qué responde / ejemplo |
 |---|---|---|
 | `oee` · `disponibilidad` · `rendimiento` · `calidad` · `cumplimiento` | `node`, `period` | el indicador del nodo (0–1). *"¿OEE de la Línea 2 esta semana?"* |
-| `rank_oee` | `period` | equipos por OEE, peor primero. *"¿qué equipo afecta más el OEE?"* |
+| `rank_devices` | `indicator`, `order`, `period` | equipos por un indicador, peor o mejor primero. *"¿qué equipo afecta más el OEE?"* (oee/worst) · *"¿la máquina con más disponibilidad?"* (disponibilidad/best) |
 | `rank_downtime` | `node?`, `period` | equipos por tiempo total detenido, mayor primero. *"¿qué máquina estuvo más detenida ayer?"* |
 | `top_stops` | `period`, `by`=`time`\|`count`, `node?` | motivos de detención agregados (tiempo o conteo). *"¿la detención más repetida/larga?"* |
 | `stops_detail` | `node?`, `period`, `reason?` | lista cronológica de paradas con hora inicio/fin, duración y motivo. *"¿a qué hora fueron las detenciones programadas?"* |
@@ -282,7 +282,11 @@ internamente); `production` suma; `top_stops`/`rank_downtime`/`stops_detail`/
 | `sabana` | `node?`, `period` | detalle de corridas: totales, producción por producto y muestra de filas. *"¿producción por producto de la Termoformadora 9 ayer?"* |
 
 - **`period`**: `hoy`, `ayer`, `anteayer`, `esta semana`, `semana pasada`,
-  `este mes`, `mes pasado`, `últimos N días`.
+  `este mes`, `mes pasado`, `últimos N días`, o un mes por nombre (`mayo`,
+  `el mes de diciembre`).
+- **`indicator` / `order`** (rank_devices): indicador a clasificar
+  (oee/disponibilidad/rendimiento/calidad/cumplimiento) y `worst` (más bajo
+  primero) o `best` (más alto primero).
 - **`measure`** (production): `standard` = contador × kp (default), `counter` =
   contador crudo, `tons` = toneladas.
 - **`by`** (top_stops): `time` (detención más larga) o `count` (más repetida).
