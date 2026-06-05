@@ -31,7 +31,11 @@ MAX_STALL_RETRIES = 2
 # the model truncates mid-reasoning and emits empty turns. Size it for the
 # specs + history + reasoning budget.
 NUM_CTX = int(os.environ.get("PLANTAGENT_NUM_CTX", "16384"))
-_LLM_OPTS = {"num_ctx": NUM_CTX}
+# Greedy decoding: la selección de herramienta debe ser determinista — con la
+# temperatura default de Ollama (~0.8) la misma pregunta tomaba caminos
+# distintos entre corridas (58.4% vs 85.4% para el mismo OEE semanal).
+TEMPERATURE = float(os.environ.get("PLANTAGENT_TEMPERATURE", "0"))
+_LLM_OPTS = {"num_ctx": NUM_CTX, "temperature": TEMPERATURE}
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +62,11 @@ def _assistant_turn(msg: dict) -> dict:
 
 
 async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]]:
+    # Pista de auditoría en el log del servidor: la evidencia SSE de la UI es
+    # efímera; sin esto un "¿de dónde salió esta cifra?" en QA no se puede
+    # reconstruir después.
+    logger.info("plantagent question client=%s plant_id=%s q=%r",
+                ctx.client, ctx.plant_id, question)
     messages = [
         {"role": "system", "content": prompts.SYSTEM_PROMPT},
         {"role": "user", "content": prompts.build_user_message(question, ctx)},
@@ -101,12 +110,15 @@ async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]
                     result = tools.dispatch(name, args, ctx)
                     dt = time.monotonic() - t0
                     tools_s += dt
+                    logger.info("plantagent tool %s args=%s period=%s %.2fs",
+                                name, args, result.get("period"), dt)
                     yield schemas.EVENT_TOOL, {
                         "name": name, "args": args, "period": result.get("period"),
                         "elapsed": round(dt, 2)}
                 except tools.ToolError as e:
                     tools_s += time.monotonic() - t0
                     result = {"error": str(e)}
+                    logger.warning("plantagent tool %s args=%s error=%s", name, args, e)
                     yield schemas.EVENT_TOOL, {"name": name, "args": args, "error": str(e)}
                 except Exception:  # unexpected — never crash the stream over one tool
                     result = {"error": "error interno al ejecutar la herramienta"}
@@ -137,6 +149,8 @@ async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]
                 "No pude responder con las herramientas disponibles. Reformula la "
                 "pregunta indicando equipo/línea/sección y período.")}
         total_s = time.monotonic() - t_start
+        logger.info("plantagent done client=%s plant_id=%s total=%.1fs rounds=%d tools=%d",
+                    ctx.client, ctx.plant_id, total_s, rounds, calls)
         yield schemas.EVENT_DONE, {"timing": {
             "total_s": round(total_s, 2),
             "llm_s": round(llm_s, 2),            # tool-selection rounds

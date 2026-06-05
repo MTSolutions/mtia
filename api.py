@@ -1,5 +1,6 @@
 """MTIA — central ML/AI service."""
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -14,6 +15,13 @@ from modules.plantagent.router import router as plantagent_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Auditoría: los módulos loguean a nivel INFO (preguntas y tool-calls del
+    # plantagent). uvicorn no instala handler de root, así que sin esto solo
+    # se verían WARNING+ (handler lastResort de Python).
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
     # Fail fast: sin JWT_SECRET todo endpoint autenticado daría 500 en el
     # primer request. Mejor que el contenedor no levante y el log lo diga.
     if not os.environ.get("JWT_SECRET"):
