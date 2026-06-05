@@ -13,6 +13,7 @@ and ToolContext.mtapi_call — no network required.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from typing import AsyncIterator
@@ -31,6 +32,8 @@ MAX_STALL_RETRIES = 2
 # specs + history + reasoning budget.
 NUM_CTX = int(os.environ.get("PLANTAGENT_NUM_CTX", "16384"))
 _LLM_OPTS = {"num_ctx": NUM_CTX}
+
+logger = logging.getLogger(__name__)
 
 
 def _coerce_args(raw) -> dict:
@@ -143,7 +146,10 @@ async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]
             "rounds": rounds, "tool_calls": calls}}
     except Exception:
         # Any unhandled failure (e.g. LLM transport) ends as a clean SSE error,
-        # never a fabricated answer or a broken stream.
+        # never a fabricated answer or a broken stream. Log the traceback —
+        # the SSE message is generic on purpose, the log must not be.
+        logger.exception("plantagent run failed (client=%s plant_id=%s)",
+                         ctx.client, ctx.plant_id)
         yield schemas.EVENT_ERROR, {
             "message": "No se pudo completar la consulta. Inténtalo nuevamente."}
         yield schemas.EVENT_DONE, {}

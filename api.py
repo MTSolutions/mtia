@@ -14,6 +14,13 @@ from modules.plantagent.router import router as plantagent_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Fail fast: sin JWT_SECRET todo endpoint autenticado daría 500 en el
+    # primer request. Mejor que el contenedor no levante y el log lo diga.
+    if not os.environ.get("JWT_SECRET"):
+        raise RuntimeError(
+            "JWT_SECRET no está definido en el entorno del contenedor mtia "
+            "(agrégalo al .env del workspace y recrea con `invoke mtia.up`)")
+
     models_dir = os.environ.get("MODELS_DIR") or os.environ.get("MODEL_DIR")
     database_url = os.environ["DATABASE_URL"]
 
