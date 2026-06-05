@@ -586,17 +586,25 @@ def _tool_top_stops(args: dict, ctx: ToolContext) -> dict:
 
     data = _call(ctx, "pareto", start, end, devids) or {}
     rows = data.get("codstates", []) or []
+    # mtapi2's `time_s` is misnamed: pareto() returns HOURS (total_seconds/3600).
+    total_h = sum((r.get("time_s") or 0) for r in rows)
     sort_key = "num" if by == "count" else "time_s"
     rows = sorted(rows, key=lambda r: r.get(sort_key) or 0, reverse=True)
+    # time_fmt/share_pct are preformatted so the model cites unit and share
+    # verbatim instead of inventing them (it once narrated 111.53 h as '111.53%').
     return {
         "scope": scope_label,
         "by": by,
+        "total_time_fmt": "{:.1f} h".format(total_h),
         "stops": [
             {
                 "desc": r.get("desc"),
                 "code_f": r.get("code_f"),
                 "count": r.get("num"),
                 "time_h": r.get("time_s"),
+                "time_fmt": "{:.1f} h".format(r.get("time_s") or 0),
+                "share_pct": ("{:.1f}%".format(100.0 * (r.get("time_s") or 0) / total_h)
+                              if total_h else None),
             }
             for r in rows[:10]
         ],

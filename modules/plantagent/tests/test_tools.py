@@ -171,6 +171,29 @@ def test_top_stops_by_count_orders_by_occurrences():
     assert result["stops"][0]["count"] == 12
 
 
+def test_top_stops_preformats_duration_and_share():
+    # The model once narrated 111.53 h as '111.53%' — the tool now ships the
+    # unit and the share preformatted so figures are cited verbatim.
+    call = recording_call({"pareto": PARETO})
+    ctx = make_ctx(mtapi_call=call)
+    result = tools.dispatch("top_stops", {"period": "hoy"}, ctx)
+    assert result["total_time_fmt"] == "12.5 h"
+    first = result["stops"][0]   # Cambio de formato, 8.0 h of 12.5 h
+    assert first["time_fmt"] == "8.0 h"
+    assert first["share_pct"] == "64.0%"
+    second = result["stops"][1]  # Falla mecánica, 4.5 h of 12.5 h
+    assert second["time_fmt"] == "4.5 h"
+    assert second["share_pct"] == "36.0%"
+
+
+def test_top_stops_share_is_none_when_total_is_zero():
+    call = recording_call({"pareto": {"codstates": [
+        {"id": 3, "desc": "Sin tiempo", "code_f": "ST", "num": 1, "time_s": 0}]}})
+    ctx = make_ctx(mtapi_call=call)
+    result = tools.dispatch("top_stops", {"period": "hoy"}, ctx)
+    assert result["stops"][0]["share_pct"] is None
+
+
 def test_top_stops_line_scoped_resolves_devices_then_paretos():
     call = recording_call({"devtree_named": PLANT_TREE_LINES, "pareto": PARETO})
     ctx = make_ctx(device_ids=(1079, 1080, 1081), mtapi_call=call)

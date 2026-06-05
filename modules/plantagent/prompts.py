@@ -30,6 +30,10 @@ SYSTEM_PROMPT = (
     "porcentaje formateado tal cual ('16.5%'); nunca conviertas la fracción tú "
     "mismo ni escribas nombres de campos en la respuesta. Para tener cifras "
     "primero DEBES llamar la herramienta.\n"
+    "- Las duraciones vienen formateadas con su unidad ('time_fmt': '26.7 h') "
+    "y su participación sobre el total en 'share_pct' ('14.6%'). Cita esas "
+    "versiones tal cual. NUNCA agregues una unidad que la herramienta no "
+    "entrega: una cifra en horas jamás se escribe con '%'.\n"
     "- Responde en español neutro (sin voseo), de forma breve y precisa, "
     "indicando el equipo y el período consultado.\n"
 )
