@@ -310,10 +310,20 @@ Notas:
 
 | Var | Uso |
 |---|---|
-| `OLLAMA_URL` / `LLM_MODEL` | endpoint y modelo del LLM (compartido con RAG) |
+| `LLM_PROVIDER` | backend del chat-LLM: `ollama` (default, in-environment) u `openrouter`/cualquier servidor OpenAI-compatible |
+| `OLLAMA_URL` / `LLM_MODEL` | endpoint Ollama y modelo del LLM (compartido con RAG) |
+| `LLM_URL` | base URL OpenAI-compatible cuando `LLM_PROVIDER≠ollama` (default `https://openrouter.ai/api/v1`; sirve para vLLM/llama.cpp: `http://vllm:8000/v1`) |
+| `OPENROUTER_API_KEY` (o `LLM_API_KEY`) | Bearer key del backend OpenAI-compatible |
 | `MTAPI2_URL` | XMLRPC de mtapi2 (default `http://mtapi2:7777/api/xmlrpc`) |
 | `JWT_SECRET` | mismo secreto que `api` (HS512) |
 | `PLANTAGENT_DEFAULT_TZ` | tz de la planta para resolver "hoy/ayer/…" (default `America/Santiago`; resolver por planta es un pendiente) |
+
+> **OpenRouter = egreso externo.** El default sigue siendo inferencia
+> in-environment. Activar `LLM_PROVIDER=openrouter` envía la pregunta, los
+> esquemas de herramientas y los **resultados agregados** de mtapi2 (nunca filas
+> crudas) a un servicio externo — usarlo solo para bake-offs de modelos o como
+> fallback acordado con el cliente. Los embeddings del RAG siempre quedan en
+> `OLLAMA_URL` (local).
 
 ### Modelo: dev vs producción
 
@@ -325,7 +335,13 @@ Notas:
 - **Apuntar mtia al modelo**: `LLM_MODEL=gemma4:12b` (ver Variables de entorno).
 - **Producción (in-environment)**: nodo GPU propio (Linode/on-prem) con
   `gemma4:12b` vía Ollama o vLLM. El backend LLM se selecciona por env
-  (`OLLAMA_URL`/`LLM_MODEL`), así que dev → GPU no cambian el código de mtia.
+  (`LLM_PROVIDER`/`OLLAMA_URL`/`LLM_URL`/`LLM_MODEL`), así que dev → GPU →
+  OpenRouter no cambian el código de mtia.
+- **OpenRouter (opt-in)**: `LLM_PROVIDER=openrouter`,
+  `OPENROUTER_API_KEY=sk-or-…`, `LLM_MODEL=<modelo OpenRouter>` (p. ej.
+  `google/gemma-3-27b-it`). Mismo agente, mismas herramientas; el adaptador
+  OpenAI traduce mensajes/tool-calls en ambas direcciones. Ver la nota de
+  egreso externo arriba.
 
 ### Ejemplos
 

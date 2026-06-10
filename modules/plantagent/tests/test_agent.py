@@ -173,3 +173,78 @@ async def test_no_tool_call_just_streams(monkeypatch):
     assert not any(n == "tool" for n, _ in events)
     assert mtapi_calls == []
     assert [n for n, _ in events] == ["token", "done"]
+
+
+async def test_tool_result_carries_tool_call_id(monkeypatch):
+    """OpenAI-compatible backends correlate tool results by tool_call_id."""
+    ctx, _ = make_ctx()
+    call = {"tool_calls": [{"id": "call_xyz",
+                            "function": {"name": "oee",
+                                         "arguments": {"devid": 1079, "period": "hoy"}}}]}
+    script_chat_tools(monkeypatch, [call, {"content": "listo"}])
+
+    seen = {}
+
+    async def fake_stream(messages, model=None, options=None, think=False):
+        seen["messages"] = messages
+        yield "ok"
+
+    monkeypatch.setattr(llm, "chat_stream", fake_stream)
+
+    await _collect("¿OEE 1079 hoy?", ctx)
+
+    tool_msgs = [m for m in seen["messages"] if m["role"] == "tool"]
+    assert tool_msgs and tool_msgs[0]["tool_call_id"] == "call_xyz"
+    # Ollama-style correlation by name is preserved alongside.
+    assert tool_msgs[0]["tool_name"] == "oee"
+
+
+async def test_textual_tool_call_is_dispatched_not_answered(monkeypatch):
+    """A tool call emitted as JSON text (gpt-oss style) goes through dispatch."""
+    ctx, mtapi_calls = make_ctx()
+    script_chat_tools(monkeypatch, [
+        {"content": '{"tool": "oee", "input": {"devid": 1079, "period": "hoy"}}'},
+        {"content": "listo"},
+    ])
+    script_chat_stream(monkeypatch, ["El OEE es 87%."])
+
+    events = await _collect("¿OEE 1079 hoy?", ctx)
+
+    tool_events = [p for n, p in events if n == "tool"]
+    assert tool_events and tool_events[0]["name"] == "oee"
+    assert mtapi_calls and mtapi_calls[0][0] == "oee"
+
+
+async def test_textual_unknown_tool_feeds_error_back(monkeypatch):
+    """An invented tool name becomes a ToolError fed back, never answer text."""
+    ctx, mtapi_calls = make_ctx()
+    script_chat_tools(monkeypatch, [
+        {"content": '{"tool": "list_machines", "input": {}}'},
+        {"content": "no hay tal herramienta, respondo del contexto"},
+    ])
+    script_chat_stream(monkeypatch, ["Las máquinas visibles son…"])
+
+    events = await _collect("¿máquinas visibles?", ctx)
+
+    tool_events = [p for n, p in events if n == "tool"]
+    assert tool_events and "error" in tool_events[0]
+    assert mtapi_calls == []                      # nothing hit mtapi2
+    tokens = "".join(p["text"] for n, p in events if n == "token")
+    assert "list_machines" not in tokens          # JSON never leaks as answer
+
+
+async def test_final_round_gets_prose_instruction(monkeypatch):
+    ctx, _ = make_ctx()
+    script_chat_tools(monkeypatch, [{"content": "respuesta"}])
+    seen = {}
+
+    async def fake_stream(messages, model=None, options=None, think=False):
+        seen["messages"] = messages
+        yield "ok"
+
+    monkeypatch.setattr(llm, "chat_stream", fake_stream)
+
+    await _collect("hola", ctx)
+
+    last = seen["messages"][-1]
+    assert last["role"] == "system" and "prosa" in last["content"]

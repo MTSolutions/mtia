@@ -53,6 +53,32 @@ def _coerce_args(raw) -> dict:
     return {}
 
 
+def _textual_tool_call(content) -> dict | None:
+    """Detect a tool call emitted as JSON text instead of structured tool_calls.
+
+    Some models (e.g. gpt-oss via OpenRouter) write the call into `content` —
+    typically when they invent a tool that isn't in the catalog, e.g.
+    ``{"tool": "list_machines", "input": {}}``. Routing it through the normal
+    dispatch path lets validation reject it with the list of real tools, so the
+    model can self-correct instead of the raw JSON leaking into the answer.
+    """
+    text = (content or "").strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return None
+    try:
+        obj = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    name = obj.get("tool") or obj.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    args = obj.get("input") or obj.get("arguments") or obj.get("parameters") or {}
+    return {"function": {"name": name,
+                         "arguments": args if isinstance(args, dict) else {}}}
+
+
 def _assistant_turn(msg: dict) -> dict:
     return {
         "role": "assistant",
@@ -92,12 +118,18 @@ async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]
             rounds += 1
             tool_calls = msg.get("tool_calls") or []
             if not tool_calls:
+                textual = _textual_tool_call(msg.get("content"))
+                if textual is not None:
+                    msg = {"role": "assistant", "content": "",
+                           "tool_calls": [textual]}
+                    tool_calls = [textual]
                 # Empty turn (no tool call, no content) -> the model stalled;
                 # retry the tool step a few times before settling for an answer.
-                if not (msg.get("content") or "").strip() and stalls < MAX_STALL_RETRIES:
+                elif not (msg.get("content") or "").strip() and stalls < MAX_STALL_RETRIES:
                     stalls += 1
                     continue
-                break
+                else:
+                    break
 
             messages.append(_assistant_turn(msg))
             for tc in tool_calls:
@@ -124,8 +156,12 @@ async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]
                     result = {"error": "error interno al ejecutar la herramienta"}
                     yield schemas.EVENT_TOOL, {
                         "name": name, "args": args, "error": "error interno"}
+                # tool_call_id correlates the result with its call on OpenAI-
+                # compatible backends (OpenRouter/vLLM); Ollama matches by
+                # name/order and ignores it.
                 messages.append({
                     "role": "tool", "tool_name": name,
+                    "tool_call_id": tc.get("id") or f"call_{calls - 1}",
                     "content": json.dumps(result, default=str)})
 
         if hit_cap:
@@ -137,6 +173,13 @@ async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]
             })
 
         # Final user-facing answer: streamed prose, no tools, no chain-of-thought.
+        # The explicit prose instruction keeps models that lean on tool syntax
+        # (gpt-oss) from emitting a JSON tool call as the visible answer.
+        messages.append({
+            "role": "system",
+            "content": "Responde ahora al usuario en español, en prosa. No "
+                       "llames herramientas ni emitas JSON.",
+        })
         streamed = False
         async for token in llm.chat_stream(messages, options=_LLM_OPTS):
             if not streamed:
