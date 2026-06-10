@@ -87,14 +87,19 @@ def _assistant_turn(msg: dict) -> dict:
     }
 
 
-async def run(question: str, ctx: ToolContext) -> AsyncIterator[tuple[str, dict]]:
+async def run(question: str, ctx: ToolContext,
+              history: list[dict] | None = None) -> AsyncIterator[tuple[str, dict]]:
     # Pista de auditoría en el log del servidor: la evidencia SSE de la UI es
     # efímera; sin esto un "¿de dónde salió esta cifra?" en QA no se puede
     # reconstruir después.
-    logger.info("plantagent question client=%s plant_id=%s q=%r",
-                ctx.client, ctx.plant_id, question)
+    logger.info("plantagent question client=%s plant_id=%s turns=%d q=%r",
+                ctx.client, ctx.plant_id, len(history or []) // 2, question)
+    # `history` carries prior prose exchanges (memory.py); only the current
+    # question gets the topology framing — repeating it per turn would burn
+    # NUM_CTX on identical boilerplate.
     messages = [
         {"role": "system", "content": prompts.SYSTEM_PROMPT},
+        *(history or []),
         {"role": "user", "content": prompts.build_user_message(question, ctx)},
     ]
 

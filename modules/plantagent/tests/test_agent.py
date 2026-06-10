@@ -233,6 +233,28 @@ async def test_textual_unknown_tool_feeds_error_back(monkeypatch):
     assert "list_machines" not in tokens          # JSON never leaks as answer
 
 
+async def test_history_is_replayed_between_system_and_question(monkeypatch):
+    ctx, _ = make_ctx()
+    seen = {}
+
+    async def fake_tools(messages, tool_specs, model=None, options=None, think=True):
+        seen["messages"] = list(messages)
+        return {"content": "respuesta"}
+
+    monkeypatch.setattr(llm, "chat_tools", fake_tools)
+    script_chat_stream(monkeypatch, ["ok"])
+
+    history = [{"role": "user", "content": "¿OEE hoy?"},
+               {"role": "assistant", "content": "El OEE es 87%."}]
+    [ev async for ev in agent.run("¿y ayer?", ctx, history=history)]
+
+    msgs = seen["messages"]
+    assert msgs[0]["role"] == "system"
+    assert msgs[1:3] == history                       # replayed verbatim
+    assert msgs[3]["role"] == "user"
+    assert "¿y ayer?" in msgs[3]["content"]           # only current turn is framed
+
+
 async def test_final_round_gets_prose_instruction(monkeypatch):
     ctx, _ = make_ctx()
     script_chat_tools(monkeypatch, [{"content": "respuesta"}])

@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import sys
+import uuid
 from typing import Iterator
 
 import httpx
@@ -51,8 +52,11 @@ def parse_sse(lines: Iterator[str]):
         yield event, (json.loads("\n".join(data)) if data else {})
 
 
-def ask(base_url: str, token: str, client: str, plant_id: int, question: str) -> None:
+def ask(base_url: str, token: str, client: str, plant_id: int, question: str,
+        conversation_id: str | None = None) -> None:
     params = {"client": client, "plant_id": plant_id, "question": question}
+    if conversation_id:
+        params["conversation_id"] = conversation_id
     headers = {"Authorization": "JWT " + token}
     with httpx.stream("POST", base_url + "/plantagent/chat",
                       params=params, headers=headers, timeout=None) as r:
@@ -101,13 +105,18 @@ def main() -> None:
         ask(args.base_url, token, args.client, args.plant_id, args.question)
         return
 
-    print("{}Plant Agent — client={} plant={} (Ctrl-C para salir){}".format(
-        CYAN, args.client, args.plant_id, RESET))
+    # One conversation per interactive session: follow-ups ("¿y ayer?")
+    # resolve against the previous turns. One-shot stays stateless.
+    conversation_id = uuid.uuid4().hex
+    print("{}Plant Agent — client={} plant={} (Ctrl-C para salir, "
+          "memoria de conversación activa){}".format(
+              CYAN, args.client, args.plant_id, RESET))
     try:
         while True:
             q = input("{}\n> {}".format(CYAN, RESET)).strip()
             if q:
-                ask(args.base_url, token, args.client, args.plant_id, q)
+                ask(args.base_url, token, args.client, args.plant_id, q,
+                    conversation_id=conversation_id)
     except (KeyboardInterrupt, EOFError):
         print()
 

@@ -110,6 +110,54 @@ def test_mtapi_unavailable_returns_503(client, monkeypatch):
     assert r.status_code == 503
 
 
+def test_chat_with_conversation_id_replays_history(client, monkeypatch):
+    """Second turn under the same conversation_id sees the first exchange."""
+    from modules.plantagent import agent, memory
+
+    monkeypatch.setattr(memory, "store", memory.ConversationStore())
+    seen = []
+    real_run = agent.run
+
+    async def spy_run(question, ctx, history=None):
+        seen.append(list(history or []))
+        async for ev in real_run(question, ctx, history=history):
+            yield ev
+
+    monkeypatch.setattr(agent, "run", spy_run)
+
+    params = {"client": "degasa", "plant_id": 7, "conversation_id": "c1"}
+    headers = {"Authorization": f"JWT {_token()}"}
+    client.post("/plantagent/chat",
+                params={**params, "question": "¿OEE del 1079 hoy?"}, headers=headers)
+    client.post("/plantagent/chat",
+                params={**params, "question": "¿y ayer?"}, headers=headers)
+
+    assert seen[0] == []                                   # first turn: no memory
+    assert seen[1] == [
+        {"role": "user", "content": "¿OEE del 1079 hoy?"},
+        {"role": "assistant", "content": "El OEE es 87%."},
+    ]
+
+    # A different login with the same conversation_id starts clean.
+    client.post("/plantagent/chat",
+                params={**params, "question": "¿y esta semana?"},
+                headers={"Authorization": f"JWT {_token(login='otra')}"})
+    assert seen[2] == []
+
+
+def test_chat_without_conversation_id_stays_stateless(client, monkeypatch):
+    from modules.plantagent import memory
+
+    fresh = memory.ConversationStore()
+    monkeypatch.setattr(memory, "store", fresh)
+
+    r = client.post("/plantagent/chat",
+                    params={"client": "degasa", "plant_id": 7, "question": "¿OEE?"},
+                    headers={"Authorization": f"JWT {_token()}"})
+    assert r.status_code == 200
+    assert fresh._data == {}                               # nothing was stored
+
+
 def test_chat_streams_tool_token_done(client):
     r = client.post("/plantagent/chat",
                     params={"client": "degasa", "plant_id": 7, "question": "¿OEE del 1079 hoy?"},

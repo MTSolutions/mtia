@@ -256,6 +256,14 @@ Requieren `Authorization: JWT <token>` (mismo token que emite `api`).
 | GET    | `/plantagent/health`                              | salud del módulo           |
 | POST   | `/plantagent/chat?client=&plant_id=&question=`    | **SSE** stream de respuesta |
 
+`conversation_id` (opcional, elegido por el cliente, p. ej. un UUID) activa la
+memoria de conversación: los intercambios previos bajo el mismo id se reinyectan
+al contexto, así las preguntas de seguimiento ("¿y ayer?") se resuelven solas.
+Memoria en proceso, acotada por TTL y cantidad de turnos
+(`PLANTAGENT_MEMORY_TURNS`, default 5; `PLANTAGENT_MEMORY_TTL_S`, default 1800)
+y aislada por identidad del JWT (cliente + login). Sin el parámetro, cada
+request es sin estado. La TUI interactiva genera un id por sesión automáticamente.
+
 Eventos SSE: `tool` (`{name, args, period}` — un evento por llamada a mtapi2,
 traza de auditoría de cada cifra), `token` (`{text}`), `done` (`{}`), `error`
 (`{message}`). Códigos: `401` sin/JWT inválido, `403` `client` no coincide,
@@ -366,7 +374,8 @@ Preguntas que cubre (por nombre, cualquier nodo, períodos relativos):
 - *¿cuál fue el mejor día de la semana pasada para la Máquina de tostadores?* → `daily_oee`
 
 Vía HTTP directo (SSE): `POST /plantagent/chat?client=&plant_id=&question=`
-con `Authorization: JWT <token>`.
+con `Authorization: JWT <token>`; agrega `&conversation_id=<uuid>` para
+mantener la conversación entre requests.
 
 ### Tests
 

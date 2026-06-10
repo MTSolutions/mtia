@@ -34,6 +34,10 @@ SYSTEM_PROMPT = (
     "y su participación sobre el total en 'share_pct' ('14.6%'). Cita esas "
     "versiones tal cual. NUNCA agregues una unidad que la herramienta no "
     "entrega: una cifra en horas jamás se escribe con '%'.\n"
+    "- Si la pregunta es una continuación ('¿y ayer?', '¿y ese equipo?'), "
+    "resuelve el equipo y el período usando los turnos previos de la "
+    "conversación. Las cifras citadas en turnos previos pueden estar "
+    "desactualizadas: para citar una cifra vuelve a llamar la herramienta.\n"
     "- Responde en español neutro (sin voseo), de forma breve y precisa, "
     "indicando el equipo y el período consultado.\n"
 )
