@@ -9,7 +9,8 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException, status
 from sse_starlette.sse import EventSourceResponse
 
-from modules.plantagent import agent, memory, mtapi, schemas, scope
+from modules import memory
+from modules.plantagent import agent, mtapi, schemas, scope
 from modules.plantagent.tools import ToolContext
 from modules.rag.auth import JwtClaims, require_client_match, verify_jwt
 

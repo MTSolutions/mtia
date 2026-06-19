@@ -1,7 +1,7 @@
-"""ConversationStore tests — TTL, turn cap, eviction; injected clock, no sleep."""
+"""ConversationStore tests — replay budget, TTL, eviction; injected clock, no sleep."""
 from __future__ import annotations
 
-from modules.plantagent.memory import ConversationStore
+from modules.memory import ConversationStore
 
 
 class Clock:
@@ -36,14 +36,27 @@ def test_unknown_key_is_empty_and_keys_are_isolated():
     assert store.history(("degasa", "otrologin", 7, "conv-1")) == []
 
 
-def test_turn_cap_keeps_most_recent():
-    store = ConversationStore(max_turns=2, clock=Clock())
-    for i in range(4):
-        store.append(KEY, f"q{i}", f"a{i}")
+def test_replay_budget_drops_oldest_but_keeps_conversation():
+    # Each exchange costs 20 chars; a 40-char budget replays only the last two.
+    store = ConversationStore(max_chars=40, clock=Clock())
+    for i in range(10):
+        store.append(KEY, f"q{i}".ljust(10, "x"), f"a{i}".ljust(10, "x"))
 
     history = store.history(KEY)
     assert len(history) == 4                      # 2 exchanges * 2 messages
-    assert history[0]["content"] == "q2"          # oldest kept is the 3rd
+    assert history[0]["content"].startswith("q8")  # most recent two, in order
+    assert history[2]["content"].startswith("q9")
+
+    # Nothing was lost on write: widening the budget reveals the whole thread.
+    store._max_chars = 10**6
+    assert len(store.history(KEY)) == 20
+
+
+def test_newest_exchange_always_replayed_even_over_budget():
+    store = ConversationStore(max_chars=10, clock=Clock())
+    store.append(KEY, "una pregunta larga", "una respuesta mucho más larga que el budget")
+
+    assert len(store.history(KEY)) == 2           # never an empty memory
 
 
 def test_ttl_expires_idle_conversations():

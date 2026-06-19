@@ -112,7 +112,8 @@ def test_mtapi_unavailable_returns_503(client, monkeypatch):
 
 def test_chat_with_conversation_id_replays_history(client, monkeypatch):
     """Second turn under the same conversation_id sees the first exchange."""
-    from modules.plantagent import agent, memory
+    from modules import memory
+    from modules.plantagent import agent
 
     monkeypatch.setattr(memory, "store", memory.ConversationStore())
     seen = []
@@ -146,7 +147,7 @@ def test_chat_with_conversation_id_replays_history(client, monkeypatch):
 
 
 def test_chat_without_conversation_id_stays_stateless(client, monkeypatch):
-    from modules.plantagent import memory
+    from modules import memory
 
     fresh = memory.ConversationStore()
     monkeypatch.setattr(memory, "store", fresh)

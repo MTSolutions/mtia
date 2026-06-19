@@ -259,10 +259,15 @@ Requieren `Authorization: JWT <token>` (mismo token que emite `api`).
 `conversation_id` (opcional, elegido por el cliente, p. ej. un UUID) activa la
 memoria de conversación: los intercambios previos bajo el mismo id se reinyectan
 al contexto, así las preguntas de seguimiento ("¿y ayer?") se resuelven solas.
-Memoria en proceso, acotada por TTL y cantidad de turnos
-(`PLANTAGENT_MEMORY_TURNS`, default 5; `PLANTAGENT_MEMORY_TTL_S`, default 1800)
-y aislada por identidad del JWT (cliente + login). Sin el parámetro, cada
-request es sin estado. La TUI interactiva genera un id por sesión automáticamente.
+Memoria genérica en proceso (`modules/memory.py`), aislada por identidad del
+JWT (cliente + login). Las conversaciones se conservan completas; los límites
+son solo de seguridad: presupuesto de reinyección en caracteres
+(`MTIA_MEMORY_MAX_CHARS`, default 24000 ≈ 6k tokens — en hilos largos los
+turnos más viejos salen del contexto reinyectado, no de la conversación),
+TTL de inactividad (`MTIA_MEMORY_TTL_S`, default 86400 = 24 h) y tope global
+de conversaciones (`MTIA_MEMORY_MAX_CONVERSATIONS`, default 1000). Sin el
+parámetro, cada request es sin estado. La TUI interactiva genera un id por
+sesión automáticamente.
 
 Eventos SSE: `tool` (`{name, args, period}` — un evento por llamada a mtapi2,
 traza de auditoría de cada cifra), `token` (`{text}`), `done` (`{}`), `error`
