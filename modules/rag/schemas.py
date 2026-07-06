@@ -9,6 +9,7 @@ class DocumentInfo(BaseModel):
     size_bytes: int
     mtime: float
     chunks: int
+    blueprint_code: str
 
 
 class DocumentListResponse(BaseModel):

@@ -14,7 +14,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from modules.rag import embeddings, ingest as ingest_mod, llm, retrieve, router as router_mod
+from modules.rag import embeddings, ingest as ingest_mod, llm, retrieve, router as router_mod, storage
 from modules.rag.router import router as rag_router
 
 
@@ -184,6 +184,38 @@ def _parse_sse_events(text: str) -> list[tuple[str, dict]]:
             events.append((event, payload))
             event, data_lines = None, []
     return events
+
+
+def test_list_documents_includes_shared(client_with_stubs):
+    c, client = client_with_stubs
+    pdf_step = _make_pdf_bytes(["Operación de la despaletizadora L1."])
+    pdf_shared = _make_pdf_bytes(["Manual de prevención de riesgos eléctricos."])
+
+    c.post("/rag/ingest",
+           data={"client": client, "blueprint_code": "despaletizadora_l1"},
+           files={"file": ("operacion.pdf", pdf_step, "application/pdf")},
+           headers={"Authorization": f"JWT {_token(client=client)}"})
+    c.post("/rag/ingest",
+           data={"client": client, "blueprint_code": storage.SHARED_CODE},
+           files={"file": ("seguridad.pdf", pdf_shared, "application/pdf")},
+           headers={"Authorization": f"JWT {_token(client=client)}"})
+
+    r = c.get("/rag/documents",
+              params={"client": client, "blueprint_code": "despaletizadora_l1"},
+              headers={"Authorization": f"JWT {_token(client=client)}"})
+    assert r.status_code == 200
+    docs = r.json()["documents"]
+    by_source = {d["source"]: d for d in docs}
+    assert set(by_source) == {"operacion.pdf", "seguridad.pdf"}
+    assert by_source["operacion.pdf"]["blueprint_code"] == "despaletizadora_l1"
+    assert by_source["seguridad.pdf"]["blueprint_code"] == storage.SHARED_CODE
+
+    # Querying the shared bucket directly only returns shared docs
+    # (no fan-in of itself — see router.list_documents guard).
+    r_shared = c.get("/rag/documents",
+                     params={"client": client, "blueprint_code": storage.SHARED_CODE},
+                     headers={"Authorization": f"JWT {_token(client=client)}"})
+    assert [d["source"] for d in r_shared.json()["documents"]] == ["seguridad.pdf"]
 
 
 def test_chat_streams_citations_tokens_and_done(client_with_stubs):
