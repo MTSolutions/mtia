@@ -41,3 +41,11 @@ def test_list_clients_and_blueprints():
     storage.save_upload("beta", "empaque", "c.pdf", b"x")
     assert storage.list_clients() == ["acme", "beta"]
     assert storage.list_blueprints("acme") == ["control", "empaque"]
+
+
+def test_list_shared_documents_returns_dir_contents():
+    storage.save_upload("acme", "empaque", "step.pdf", b"x")
+    storage.save_upload("acme", storage.SHARED_CODE, "seguridad.pdf", b"xx")
+    shared = storage.list_shared_documents("acme")
+    assert [d.source for d in shared] == ["seguridad.pdf"]
+    assert shared[0].size_bytes == 2

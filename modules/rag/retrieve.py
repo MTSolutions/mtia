@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qm
 
+from modules.rag.storage import SHARED_CODE
+
 
 VECTOR_SIZE = 1024  # bge-m3
 
@@ -144,8 +146,10 @@ def search(
     name = collection_name(client)
     if name not in {c.name for c in qc.get_collections().collections}:
         return []
-    flt = qm.Filter(must=[
+    # Match either the step's blueprint or the shared bucket (OR semantics).
+    flt = qm.Filter(should=[
         qm.FieldCondition(key="blueprint_code", match=qm.MatchValue(value=blueprint_code)),
+        qm.FieldCondition(key="blueprint_code", match=qm.MatchValue(value=SHARED_CODE)),
     ])
     result = qc.query_points(
         collection_name=name,

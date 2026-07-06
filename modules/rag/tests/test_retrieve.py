@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from modules.rag import retrieve
+from modules.rag import retrieve, storage
 from modules.rag.retrieve import ChunkRecord
 
 
@@ -82,6 +82,20 @@ def test_delete_by_source_removes_only_that_document(collection):
     assert removed == 2
     hits = retrieve.search(collection, "empaque", _fake_vec(10), top_k=10)
     assert {h.source for h in hits} == {"b.pdf"}
+
+
+def test_search_includes_shared_chunks(collection):
+    retrieve.upsert_chunks(collection, [
+        ChunkRecord("despaletizadora_l1", "step.pdf", 1, 0,
+                    "operación", _fake_vec(10)),
+        ChunkRecord(storage.SHARED_CODE, "seguridad.pdf", 1, 0,
+                    "riesgos eléctricos", _fake_vec(20)),
+        ChunkRecord("other_step", "nope.pdf", 1, 0,
+                    "irrelevante", _fake_vec(30)),
+    ])
+    hits = retrieve.search(collection, "despaletizadora_l1", _fake_vec(10), top_k=10)
+    sources = {h.source for h in hits}
+    assert sources == {"step.pdf", "seguridad.pdf"}
 
 
 def test_upsert_is_idempotent_by_source_and_chunk_idx(collection):

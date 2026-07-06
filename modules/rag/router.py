@@ -35,16 +35,31 @@ def list_documents(
 ) -> DocumentListResponse:
     require_client_match(client, claims)
 
-    docs = storage.list_documents(client, blueprint_code)
+    step_docs = storage.list_documents(client, blueprint_code)
     documents = [
         DocumentInfo(
             source=d.source,
             size_bytes=d.size_bytes,
             mtime=d.mtime,
             chunks=retrieve.count_by_source(client, blueprint_code, d.source),
+            blueprint_code=blueprint_code,
         )
-        for d in docs
+        for d in step_docs
     ]
+    # Fold in shared docs unless the caller is already asking for them.
+    # If a filename exists in both buckets, the step-specific copy wins.
+    if blueprint_code != storage.SHARED_CODE:
+        step_sources = {d.source for d in step_docs}
+        for d in storage.list_shared_documents(client):
+            if d.source in step_sources:
+                continue
+            documents.append(DocumentInfo(
+                source=d.source,
+                size_bytes=d.size_bytes,
+                mtime=d.mtime,
+                chunks=retrieve.count_by_source(client, storage.SHARED_CODE, d.source),
+                blueprint_code=storage.SHARED_CODE,
+            ))
     return DocumentListResponse(
         client=client, blueprint_code=blueprint_code, documents=documents)
 

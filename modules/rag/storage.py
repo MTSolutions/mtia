@@ -16,6 +16,11 @@ from pathlib import Path
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 
+# Reserved blueprint_code for documents that apply to every step of a client.
+# Leading/trailing underscores are stripped by the frontend slugify(), so no
+# user-authored step name can produce this value.
+SHARED_CODE = "__shared__"
+
 
 def documents_root() -> Path:
     return Path(os.environ.get("DOCUMENTS_DIR", "/app/documents"))
@@ -55,6 +60,10 @@ def list_documents(client: str, blueprint_code: str) -> list[DocumentInfo]:
                 path=entry,
             ))
     return out
+
+
+def list_shared_documents(client: str) -> list[DocumentInfo]:
+    return list_documents(client, SHARED_CODE)
 
 
 def list_clients() -> list[str]:
