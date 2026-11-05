@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "click",
-    "sqlalchemy>=2.0",
+    "sqlalchemy>=2.0,<2.1",  # 2.1 usa psycopg 3 por defecto para postgresql://
     "psycopg2-binary",
     "pandas>=2.0",
     "lightgbm",
