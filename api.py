@@ -1,5 +1,6 @@
 """MTIA — central ML/AI service."""
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -9,10 +10,25 @@ from sqlalchemy import create_engine
 
 from modules.stopreason import load_model_artifacts, router as stopreason_router
 from modules.rag.router import router as rag_router
+from modules.plantagent.router import router as plantagent_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Auditoría: los módulos loguean a nivel INFO (preguntas y tool-calls del
+    # plantagent). uvicorn no instala handler de root, así que sin esto solo
+    # se verían WARNING+ (handler lastResort de Python).
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    # Fail fast: sin JWT_SECRET todo endpoint autenticado daría 500 en el
+    # primer request. Mejor que el contenedor no levante y el log lo diga.
+    if not os.environ.get("JWT_SECRET"):
+        raise RuntimeError(
+            "JWT_SECRET no está definido en el entorno del contenedor mtia "
+            "(agrégalo al .env del workspace y recrea con `invoke mtia.up`)")
+
     models_dir = os.environ.get("MODELS_DIR") or os.environ.get("MODEL_DIR")
     database_url = os.environ["DATABASE_URL"]
 
@@ -40,6 +56,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="MTIA - ML/AI Service", lifespan=lifespan)
 app.include_router(stopreason_router)
 app.include_router(rag_router)
+app.include_router(plantagent_router)
 
 
 @app.get("/health")

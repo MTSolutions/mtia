@@ -214,3 +214,189 @@ corriendo en el host. Los demás usan Qdrant real y Ollama stub.
 | Respuesta dice "No encontré información relevante"   | Normal si el corpus no cubre la pregunta. Ajustar threshold o agregar docs |
 | `gemma4:e4b` no responde bien en español técnico     | Probar `gemma4:26b` (ver tabla de modelos arriba) y reindexar no es necesario |
 | Embeddings muy lentos                                | Primera llamada a Ollama carga el modelo (cold start, ~5-10s). Tirar un `ollama run bge-m3` para pre-cargar |
+
+---
+
+## Módulo Plant Agent — Indicadores de planta por lenguaje natural
+
+Asistente conversacional que responde preguntas sobre los indicadores
+**oficiales** de una planta (OEE, disponibilidad, desempeño, calidad,
+detenciones, producción) en español. La clave: **el agente es la interfaz;
+mtapi2 es la fuente de verdad**. El LLM nunca calcula ni inventa cifras —
+elige qué función de mtapi2 llamar, con qué argumentos, y narra el resultado.
+
+### Arquitectura
+
+```
+frontend ──JWT── mtia (FastAPI) ──┬── LLM (Ollama/vLLM, in-environment)  ← elige herramienta
+   modules/plantagent             └── mtapi2 (XMLRPC :7777)              ← indicadores oficiales
+                                              └── webservice ORM → postgresdb
+```
+
+- **Tool-calling**, no text-to-SQL: cada herramienta envuelve una función de
+  mtapi2, valida los argumentos contra el alcance del request y ejecuta. Las
+  comparaciones ("¿qué equipo afecta más el OEE?") se calculan en código a
+  partir de cifras oficiales, no por el modelo.
+- **Por nombre y por nodo**: el agente trabaja con **nombres** (no ids) y acepta
+  un `node` que puede ser **equipo, línea, sección o planta**. Resuelve el árbol
+  con nombres vía `mtapi2.devtree_named`; para un nodo agregado pasa la **lista
+  de dev_ids** a la función de indicador (que ya agrega listas internamente).
+- **Aislamiento**: el claim `client` del JWT se exige (igual que en `rag`), el
+  `plant_id` se valida contra `getplants`, y `device_meta`/`device_names`
+  filtran por cliente (ids ajenos se descartan).
+- **mtia no necesita GPU**: solo orquesta. El motor de inferencia (Ollama/vLLM)
+  es lo único que usa GPU; mtia lo alcanza por `OLLAMA_URL`/`LLM_URL`.
+
+### Endpoints
+
+Requieren `Authorization: JWT <token>` (mismo token que emite `api`).
+
+| Método | Ruta                                              | Uso                        |
+|--------|---------------------------------------------------|----------------------------|
+| GET    | `/plantagent/health`                              | salud del módulo           |
+| POST   | `/plantagent/chat?client=&plant_id=&question=`    | **SSE** stream de respuesta |
+
+`conversation_id` (opcional, elegido por el cliente, p. ej. un UUID) activa la
+memoria de conversación: los intercambios previos bajo el mismo id se reinyectan
+al contexto, así las preguntas de seguimiento ("¿y ayer?") se resuelven solas.
+Memoria genérica en proceso (`modules/memory.py`), aislada por identidad del
+JWT (cliente + login). Las conversaciones se conservan completas; los límites
+son solo de seguridad: presupuesto de reinyección en caracteres
+(`MTIA_MEMORY_MAX_CHARS`, default 24000 ≈ 6k tokens — en hilos largos los
+turnos más viejos salen del contexto reinyectado, no de la conversación),
+TTL de inactividad (`MTIA_MEMORY_TTL_S`, default 86400 = 24 h) y tope global
+de conversaciones (`MTIA_MEMORY_MAX_CONVERSATIONS`, default 1000). Sin el
+parámetro, cada request es sin estado. La TUI interactiva genera un id por
+sesión automáticamente.
+
+Eventos SSE: `tool` (`{name, args, period}` — un evento por llamada a mtapi2,
+traza de auditoría de cada cifra), `token` (`{text}`), `done` (`{}`), `error`
+(`{message}`). Códigos: `401` sin/JWT inválido, `403` `client` no coincide,
+`404` `plant_id` ajeno al cliente, `503` mtapi2 no disponible.
+
+### Catálogo de herramientas
+
+El agente trabaja **por nombre** y casi todas las herramientas aceptan un
+**`node`** (equipo, línea, sección o planta) y un **`period`** relativo. Para un
+nodo agregado, la familia OEE pasa la lista de dev_ids al indicador (que agrega
+internamente); `production` suma; `top_stops`/`rank_downtime`/`stops_detail`/
+`sabana` usan el conjunto de equipos del nodo. Cada llamada emite un evento SSE
+`tool` (traza de auditoría de la cifra).
+
+| Herramienta | Parámetros | Qué responde / ejemplo |
+|---|---|---|
+| `oee` · `disponibilidad` · `rendimiento` · `calidad` · `cumplimiento` | `node`, `period` | el indicador del nodo (0–1). *"¿OEE de la Línea 2 esta semana?"* |
+| `rank_devices` | `indicator`, `order`, `period` | equipos por un indicador, peor o mejor primero. *"¿qué equipo afecta más el OEE?"* (oee/worst) · *"¿la máquina con más disponibilidad?"* (disponibilidad/best) |
+| `rank_downtime` | `node?`, `period` | equipos por tiempo total detenido, mayor primero. *"¿qué máquina estuvo más detenida ayer?"* |
+| `top_stops` | `period`, `by`=`time`\|`count`, `node?` | motivos de detención agregados (tiempo o conteo). *"¿la detención más repetida/larga?"* |
+| `stops_detail` | `node?`, `period`, `reason?` | lista cronológica de paradas con hora inicio/fin, duración y motivo. *"¿a qué hora fueron las detenciones programadas?"* |
+| `production` | `node`, `period`, `measure` | producción del nodo (suma). *"¿cuánto produjo la Envasadora ayer?"* |
+| `daily_oee` | `node`, `period` | OEE por día + mejor/peor día. *"¿el mejor día de la semana pasada?"* |
+| `sabana` | `node?`, `period` | detalle de corridas: totales, producción por producto y muestra de filas. *"¿producción por producto de la Termoformadora 9 ayer?"* |
+
+- **`period`**: `hoy`, `ayer`, `anteayer`, `esta semana`, `semana pasada`,
+  `este mes`, `mes pasado`, `últimos N días`, o un mes por nombre (`mayo`,
+  `el mes de diciembre`).
+- **`indicator` / `order`** (rank_devices): indicador a clasificar
+  (oee/disponibilidad/rendimiento/calidad/cumplimiento) y `worst` (más bajo
+  primero) o `best` (más alto primero).
+- **`measure`** (production): `standard` = contador × kp (default), `counter` =
+  contador crudo, `tons` = toneladas.
+- **`by`** (top_stops): `time` (detención más larga) o `count` (más repetida).
+- **`reason`** (stops_detail): substring del motivo, p.ej. `PROGRAMADO`, `AVERIA`.
+
+Notas:
+- Tres herramientas de detención, distintas: `top_stops` (motivos agregados) ·
+  `rank_downtime` (equipos por tiempo detenido) · `stops_detail` (cada parada
+  con su horario).
+- **Fuente de datos**: `top_stops`/`rank_downtime`/`stops_detail` leen `S_reg`
+  (vía `pareto`/`stop_intervals`) y sirven para **cualquier cliente**; `sabana`
+  requiere SabanaRows precalculados (clientes con el DAG sabana).
+- `cumplimiento` es específico por cliente; si no está, responde "no disponible"
+  en vez de fallar.
+- `kp` es un **multiplicador de la especificación del producto**, no una unidad;
+  la unidad de medida vive en `Device.unit` (la expone `mtapi2.device_meta`).
+- Resolución por nombre/aislamiento: el árbol con nombres viene de
+  `mtapi2.devtree_named`; `device_meta`/`device_names` filtran por cliente.
+
+### Variables de entorno
+
+| Var | Uso |
+|---|---|
+| `LLM_PROVIDER` | backend del chat-LLM: `ollama` (default, in-environment) u `openrouter`/cualquier servidor OpenAI-compatible |
+| `OLLAMA_URL` / `LLM_MODEL` | endpoint Ollama y modelo del LLM (compartido con RAG) |
+| `LLM_URL` | base URL OpenAI-compatible cuando `LLM_PROVIDER≠ollama` (default `https://openrouter.ai/api/v1`; sirve para vLLM/llama.cpp: `http://vllm:8000/v1`) |
+| `OPENROUTER_API_KEY` (o `LLM_API_KEY`) | Bearer key del backend OpenAI-compatible |
+| `MTAPI2_URL` | XMLRPC de mtapi2 (default `http://mtapi2:7777/api/xmlrpc`) |
+| `JWT_SECRET` | mismo secreto que `api` (HS512) |
+| `PLANTAGENT_DEFAULT_TZ` | tz de la planta para resolver "hoy/ayer/…" (default `America/Santiago`; resolver por planta es un pendiente) |
+
+> **OpenRouter = egreso externo.** El default sigue siendo inferencia
+> in-environment. Activar `LLM_PROVIDER=openrouter` envía la pregunta, los
+> esquemas de herramientas y los **resultados agregados** de mtapi2 (nunca filas
+> crudas) a un servicio externo — usarlo solo para bake-offs de modelos o como
+> fallback acordado con el cliente. Los embeddings del RAG siempre quedan en
+> `OLLAMA_URL` (local).
+
+### Modelo: dev vs producción
+
+- **Modelo objetivo: `gemma4:12b`.** Hace tool-calling fiable y resuelve bien
+  nodos y períodos relativos. Requiere **Ollama ≥ 0.30.4** (el soporte de la
+  12B unificada se agregó en 0.30.3 pero el manifest exige 0.30.4; usar el
+  estable cuando salga, o el pre-release `v0.30.4-rcN`). `gemma4:e4b` sirve para
+  *plumbing* pero su tool-calling es débil.
+- **Apuntar mtia al modelo**: `LLM_MODEL=gemma4:12b` (ver Variables de entorno).
+- **Producción (in-environment)**: nodo GPU propio (Linode/on-prem) con
+  `gemma4:12b` vía Ollama o vLLM. El backend LLM se selecciona por env
+  (`LLM_PROVIDER`/`OLLAMA_URL`/`LLM_URL`/`LLM_MODEL`), así que dev → GPU →
+  OpenRouter no cambian el código de mtia.
+- **OpenRouter (opt-in)**: `LLM_PROVIDER=openrouter`,
+  `OPENROUTER_API_KEY=sk-or-…`, `LLM_MODEL=<modelo OpenRouter>` (p. ej.
+  `google/gemma-3-27b-it`). Mismo agente, mismas herramientas; el adaptador
+  OpenAI traduce mensajes/tool-calls en ambas direcciones. Ver la nota de
+  egreso externo arriba.
+
+### Ejemplos
+
+La forma más simple de probar es la CLI/TUI (dentro del contenedor; firma un
+JWT desde `JWT_SECRET`):
+
+```bash
+# interactivo
+docker compose exec -it mtia python -m modules.plantagent.tui \
+    --client <cliente> --plant-id <id>
+
+# una sola pregunta
+docker compose exec -T mtia python -m modules.plantagent.tui \
+    --client <cliente> --plant-id <id> \
+    --question "¿qué máquina estuvo más tiempo detenida ayer?"
+```
+
+Preguntas que cubre (por nombre, cualquier nodo, períodos relativos):
+- *¿qué equipo afecta más el OEE esta semana?* → `rank_oee`
+- *¿qué máquina estuvo más tiempo detenida ayer?* → `rank_downtime`
+- *¿OEE de la sección Químicos el mes pasado?* → `oee` (agrega la sección)
+- *¿cuál fue el mejor día de la semana pasada para la Máquina de tostadores?* → `daily_oee`
+
+Vía HTTP directo (SSE): `POST /plantagent/chat?client=&plant_id=&question=`
+con `Authorization: JWT <token>`; agrega `&conversation_id=<uuid>` para
+mantener la conversación entre requests.
+
+### Tests
+
+```bash
+docker compose exec mtia python -m pytest modules/plantagent/tests/
+```
+
+Los tests stubean **mtapi2 y el LLM** (sin red): periodos, scope, catálogo de
+herramientas, loop de tool-calling, auth y forma del SSE.
+
+### Problemas frecuentes
+
+| Síntoma | Causa / solución |
+|---|---|
+| `ollama pull gemma4:12b` → `412 requires a newer version` | El manifest de la 12B exige Ollama ≥ 0.30.4. Actualizar a 0.30.4 estable (`brew upgrade --cask ollama-app`) o correr el pre-release `v0.30.4-rcN` (binario del `.tgz` de GitHub). |
+| `llama-server binary not found` en macOS | La **fórmula** de Homebrew `ollama` viene incompleta. Usar la **app oficial** (`brew install --cask ollama-app` o ollama.com), no la fórmula. |
+| `503` en `/plantagent/chat` | mtapi2 no responde. Verificar el contenedor `mtapi2`. |
+| "no encontré '<nombre>'" | El nodo no existe o el nombre no coincide; el error lista los disponibles. Probá con el nombre exacto del equipo/línea/sección. |
+| Respuestas con tool-calling poco fiables | `gemma4:e4b` es débil; usar `gemma4:12b` (`LLM_MODEL=gemma4:12b`, Ollama ≥ 0.30.4). |
