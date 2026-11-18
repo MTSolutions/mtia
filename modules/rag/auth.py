@@ -9,7 +9,7 @@ import os
 from dataclasses import dataclass
 
 import jwt
-from fastapi import Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 
 
 ALGORITHM = "HS512"
@@ -63,3 +63,24 @@ def require_client_match(requested_client: str, claims: JwtClaims) -> None:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             f"token is scoped to client={claims.client!r}, cannot access {requested_client!r}")
+
+
+def require_feature(name: str, detail: str | None = None):
+    """FastAPI dependency factory: the token must carry the client flag `name`.
+
+    Client flags are claims the v3 `api` puts in the token at login
+    (`api/features.py`): a boolean key of `j_client.data`, or one derived from
+    the client's commercial plan — `plantAgent` comes with Ultimate AI
+    (MTS-2613). Only a literal `true` counts. A plan change takes effect on
+    the user's next login, because the claim lives in the token.
+
+    Returns the verified claims, so an endpoint needs this dependency alone.
+    """
+    def dependency(claims: JwtClaims = Depends(verify_jwt)) -> JwtClaims:
+        if claims.raw.get(name) is not True:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                detail or f"token for client={claims.client!r} lacks the {name!r} feature")
+        return claims
+
+    return dependency

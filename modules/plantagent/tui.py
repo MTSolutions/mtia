@@ -31,8 +31,10 @@ def mint_token(client: str, login: str = "tui") -> str:
     secret = os.environ.get("JWT_SECRET")
     if not secret:
         raise SystemExit("JWT_SECRET not set in the container environment")
+    # plantAgent: the claim /plantagent/chat requires (Ultimate AI, MTS-2613).
     return jwt.encode(
-        {"sub": 1, "roles": "admin", "client": client, "login": login},
+        {"sub": 1, "roles": "admin", "client": client, "login": login,
+         "plantAgent": True},
         secret, algorithm="HS512")
 
 

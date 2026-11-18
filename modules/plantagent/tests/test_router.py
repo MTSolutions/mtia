@@ -15,10 +15,16 @@ from modules.rag import llm
 SECRET = "secret"
 
 
-def _token(client="degasa", login="tester"):
-    return jwt.encode(
-        {"sub": 1746, "roles": "admin", "client": client, "login": login},
-        SECRET, algorithm="HS512")
+_ABSENT = object()
+
+
+def _token(client="degasa", login="tester", plant_agent=True):
+    """Token como el que emite el api de v3. `plantAgent` es el claim del plan
+    Ultimate AI (MTS-2613); `plant_agent=_ABSENT` lo deja fuera."""
+    claims = {"sub": 1746, "roles": "admin", "client": client, "login": login}
+    if plant_agent is not _ABSENT:
+        claims["plantAgent"] = plant_agent
+    return jwt.encode(claims, SECRET, algorithm="HS512")
 
 
 @pytest.fixture
@@ -78,6 +84,55 @@ def test_health_ok(client):
 def test_unauthenticated_returns_401(client):
     r = client.post("/plantagent/chat",
                     params={"client": "degasa", "plant_id": 7, "question": "OEE?"})
+    assert r.status_code == 401
+
+
+def test_health_needs_no_token_nor_plan(client):
+    assert client.get("/plantagent/health").status_code == 200
+
+
+def test_without_plant_agent_claim_returns_403(client):
+    # MTS-2613 C5: el Plant Agent es del plan Ultimate AI. Un token valido del
+    # cliente, sin el claim, no pregunta.
+    r = client.post("/plantagent/chat",
+                    params={"client": "degasa", "plant_id": 7, "question": "OEE?"},
+                    headers={"Authorization": f"JWT {_token(plant_agent=_ABSENT)}"})
+    assert r.status_code == 403
+    assert "plantAgent" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("value", [False, "true", 1, None, "ultimate_ai"])
+def test_plant_agent_claim_must_be_true(client, value):
+    r = client.post("/plantagent/chat",
+                    params={"client": "degasa", "plant_id": 7, "question": "OEE?"},
+                    headers={"Authorization": f"JWT {_token(plant_agent=value)}"})
+    assert r.status_code == 403
+
+
+def test_without_claim_the_agent_never_runs(client, monkeypatch):
+    called = []
+    monkeypatch.setattr(scope, "validate_plant",
+                        lambda c, p, **k: called.append(p) or {"id": p, "name": "Planta"})
+    r = client.post("/plantagent/chat",
+                    params={"client": "degasa", "plant_id": 7, "question": "OEE?"},
+                    headers={"Authorization": f"JWT {_token(plant_agent=_ABSENT)}"})
+    assert r.status_code == 403
+    assert called == []
+
+
+def test_plan_is_checked_before_the_tenant(client):
+    # Sin el plan no se revela si el cliente pedido coincide con el del token.
+    r = client.post("/plantagent/chat",
+                    params={"client": "otrocliente", "plant_id": 7, "question": "OEE?"},
+                    headers={"Authorization": f"JWT {_token(plant_agent=_ABSENT)}"})
+    assert r.status_code == 403
+    assert "plantAgent" in r.json()["detail"]
+
+
+def test_invalid_token_is_still_401(client):
+    r = client.post("/plantagent/chat",
+                    params={"client": "degasa", "plant_id": 7, "question": "OEE?"},
+                    headers={"Authorization": "JWT no-es-un-token"})
     assert r.status_code == 401
 
 

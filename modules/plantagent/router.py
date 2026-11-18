@@ -12,7 +12,7 @@ from sse_starlette.sse import EventSourceResponse
 from modules import memory
 from modules.plantagent import agent, mtapi, schemas, scope
 from modules.plantagent.tools import ToolContext
-from modules.rag.auth import JwtClaims, require_client_match, verify_jwt
+from modules.rag.auth import JwtClaims, require_client_match, require_feature
 
 
 router = APIRouter(prefix="/plantagent", tags=["plantagent"])
@@ -21,6 +21,12 @@ router = APIRouter(prefix="/plantagent", tags=["plantagent"])
 # client.time_zone_str); adding one is an ask-first change to the Py2.7 service.
 # Until then the plant tz defaults from env. TODO(MTS-1285): resolve per plant.
 DEFAULT_TZ = os.environ.get("PLANTAGENT_DEFAULT_TZ", "America/Santiago")
+
+# The Plant Agent belongs to the Ultimate AI plan (MTS-2613). The v3 api puts
+# this claim in the token at login, only for clients on that plan.
+PLANT_AGENT_FEATURE = "plantAgent"
+_NO_PLAN = ("El Plant Agent es del plan Ultimate AI: el token no trae el permiso "
+            f"'{PLANT_AGENT_FEATURE}'. Si el plan cambió, inicia sesión de nuevo.")
 
 
 @router.get("/health")
@@ -34,7 +40,7 @@ async def chat(
     plant_id: int,
     question: str,
     conversation_id: str | None = None,
-    claims: JwtClaims = Depends(verify_jwt),
+    claims: JwtClaims = Depends(require_feature(PLANT_AGENT_FEATURE, _NO_PLAN)),
 ):
     """Stream a grounded answer about a plant's official indicators as SSE.
 
